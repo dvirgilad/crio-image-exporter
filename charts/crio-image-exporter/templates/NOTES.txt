@@ -1,0 +1,23 @@
+crio-image-exporter is installing as a DaemonSet in namespace {{ .Release.Namespace }}.
+
+Check rollout:
+  oc rollout status daemonset/{{ include "crio-image-exporter.fullname" . }} -n {{ .Release.Namespace }}
+
+{{ if not .Values.storageInspection.enabled -}}
+Exact per-image attribution is OFF. You are getting apparent image sizes, which
+double-count layers shared between images. To learn how many bytes you actually
+reclaim by deleting an image, enable:
+
+  --set storageInspection.enabled=true
+
+{{ end -}}
+If pods log "permission denied" dialing the CRI socket, SELinux is blocking the
+connection. Escalate one rung at a time:
+
+  1. --set podSecurityContext.seLinuxOptions.type=spc_t
+  2. --set scc.name=privileged
+
+Query example -- largest reclaimable images on each node:
+
+  topk(10, crio_image_exclusive_size_bytes)
+    * on(image_id) group_left(repository, tag) crio_image_info

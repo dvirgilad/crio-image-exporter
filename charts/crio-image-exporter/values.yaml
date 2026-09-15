@@ -1,0 +1,100 @@
+image:
+  repository: ghcr.io/dvirgilad/crio-image-exporter
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+exporter:
+  logLevel: info
+  criSocket: unix:///var/run/crio/crio.sock
+  criTimeout: 10s
+
+  # Image creation timestamps. Refreshed in the background; steady-state cost
+  # is near zero because creation time is immutable per image ID.
+  collectImageAge: true
+  imageAgeRefreshInterval: 5m
+
+  # Cardinality controls. Per-image series are on by default.
+  # imageNameFilter is a regex allowlist matched against repo tags.
+  imageNameFilter: ""
+  # maxImages caps per-image series; 0 is unlimited. The largest images are
+  # kept, since a cap that drops the big ones defeats the purpose.
+  maxImages: 0
+  disablePerImage: false
+
+# Exact per-image attribution: how many bytes you reclaim by deleting an image.
+# Requires mounting the container storage root read-only. Reads
+# containers/storage metadata, which is an on-disk implementation detail rather
+# than a stable API — hence opt-in. Without it you still get apparent sizes and
+# crio_image_deduplication_ratio.
+storageInspection:
+  enabled: false
+  root: /var/lib/containers/storage
+  refreshInterval: 5m
+
+# OpenShift SCC binding. No SCC object is created; this binds the builtin
+# hostmount-anyuid, which permits hostPath volumes and an arbitrary UID.
+#
+# SELinux escalation ladder — start at the top, move down only if the pod logs
+# "permission denied" dialing the socket:
+#   1. hostmount-anyuid with no seLinuxOptions  (this default)
+#   2. set podSecurityContext.seLinuxOptions.type: spc_t
+#   3. set scc.name: privileged
+scc:
+  create: true
+  name: hostmount-anyuid
+
+podSecurityContext: {}
+  # seLinuxOptions:
+  #   type: spc_t
+
+securityContext:
+  # crio.sock is root-owned mode 0660, so the process must run as UID 0.
+  # Every other privilege is dropped.
+  runAsUser: 0
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  port: 9443
+  # OpenShift issues the serving certificate for this name.
+  servingCertSecretName: crio-image-exporter-tls
+
+# kube-rbac-proxy terminates TLS and authorizes scrapers against the API
+# server. When disabled the exporter binds 0.0.0.0 directly over plaintext,
+# which is the right choice on a non-OpenShift cluster.
+kubeRBACProxy:
+  enabled: true
+  image: quay.io/brancz/kube-rbac-proxy:v0.18.1
+  resources:
+    requests: {cpu: 10m, memory: 20Mi}
+    limits: {memory: 60Mi}
+
+serviceMonitor:
+  enabled: true
+  interval: 60s
+  scrapeTimeout: 30s
+  labels: {}
+
+resources:
+  requests: {cpu: 20m, memory: 40Mi}
+  limits: {memory: 200Mi}
+
+# Disk attribution matters most on control-plane nodes, so run everywhere.
+tolerations:
+  - operator: Exists
+
+nodeSelector: {}
+affinity: {}
+priorityClassName: ""
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 10%

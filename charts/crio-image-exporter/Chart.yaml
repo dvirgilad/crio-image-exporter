@@ -1,0 +1,11 @@
+apiVersion: v2
+name: crio-image-exporter
+description: Prometheus exporter for CRI-O image disk usage, deployed as a DaemonSet
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [prometheus, cri-o, openshift, metrics, images]
+home: https://github.com/dvirgilad/crio-image-exporter
+sources: [https://github.com/dvirgilad/crio-image-exporter]
+maintainers:
+  - name: dvirgilad

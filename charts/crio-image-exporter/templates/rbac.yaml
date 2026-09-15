@@ -1,0 +1,59 @@
+{{- if .Values.scc.create }}
+# Grants use of a BUILTIN SCC. No SCC object is created by this chart.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "crio-image-exporter.fullname" . }}-scc
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "crio-image-exporter.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    resourceNames: [{{ .Values.scc.name | quote }}]
+    verbs: ["use"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "crio-image-exporter.fullname" . }}-scc
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "crio-image-exporter.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "crio-image-exporter.fullname" . }}-scc
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "crio-image-exporter.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.kubeRBACProxy.enabled }}
+---
+# kube-rbac-proxy validates scraper tokens against the API server.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "crio-image-exporter.fullname" . }}-auth
+  labels: {{- include "crio-image-exporter.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "crio-image-exporter.fullname" . }}-auth
+  labels: {{- include "crio-image-exporter.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "crio-image-exporter.fullname" . }}-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "crio-image-exporter.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

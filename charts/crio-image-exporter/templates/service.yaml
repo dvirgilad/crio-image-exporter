@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crio-image-exporter.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "crio-image-exporter.labels" . | nindent 4 }}
+  {{- if .Values.kubeRBACProxy.enabled }}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: {{ .Values.service.servingCertSecretName }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector: {{- include "crio-image-exporter.selectorLabels" . | nindent 4 }}
+  ports:
+    {{- if .Values.kubeRBACProxy.enabled }}
+    - name: https
+      port: {{ .Values.service.port }}
+      targetPort: https
+      protocol: TCP
+    {{- else }}
+    - name: metrics
+      port: 8080
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}

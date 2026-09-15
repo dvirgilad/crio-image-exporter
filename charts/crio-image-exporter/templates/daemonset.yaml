@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "crio-image-exporter.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "crio-image-exporter.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {{- include "crio-image-exporter.selectorLabels" . | nindent 6 }}
+  updateStrategy: {{- toYaml .Values.updateStrategy | nindent 4 }}
+  template:
+    metadata:
+      labels: {{- include "crio-image-exporter.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "crio-image-exporter.serviceAccountName" . }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: exporter
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            {{- if .Values.kubeRBACProxy.enabled }}
+            # Bound to loopback: only the sidecar may reach it.
+            - --listen-address=127.0.0.1:8080
+            {{- else }}
+            - --listen-address=0.0.0.0:8080
+            {{- end }}
+            - --cri-socket={{ .Values.exporter.criSocket }}
+            - --cri-timeout={{ .Values.exporter.criTimeout }}
+            - --log-level={{ .Values.exporter.logLevel }}
+            - --collect-image-age={{ .Values.exporter.collectImageAge }}
+            - --image-age-refresh-interval={{ .Values.exporter.imageAgeRefreshInterval }}
+            - --max-images={{ .Values.exporter.maxImages }}
+            {{- with .Values.exporter.imageNameFilter }}
+            - --image-name-filter={{ . }}
+            {{- end }}
+            {{- if .Values.exporter.disablePerImage }}
+            - --disable-per-image
+            {{- end }}
+            {{- if .Values.storageInspection.enabled }}
+            - --storage-root={{ .Values.storageInspection.root }}
+            - --storage-refresh-interval={{ .Values.storageInspection.refreshInterval }}
+            {{- end }}
+          ports:
+            {{- if not .Values.kubeRBACProxy.enabled }}
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8080, host: 127.0.0.1}
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: 8080, host: 127.0.0.1}
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: crio-socket
+              mountPath: {{ .Values.exporter.criSocket | replace "unix://" "" }}
+              readOnly: true
+            {{- if .Values.storageInspection.enabled }}
+            - name: container-storage
+              mountPath: {{ .Values.storageInspection.root }}
+              readOnly: true
+            {{- end }}
+        {{- if .Values.kubeRBACProxy.enabled }}
+        - name: kube-rbac-proxy
+          image: {{ .Values.kubeRBACProxy.image }}
+          args:
+            - --secure-listen-address=0.0.0.0:{{ .Values.service.port }}
+            - --upstream=http://127.0.0.1:8080/
+            - --tls-cert-file=/etc/tls/private/tls.crt
+            - --tls-private-key-file=/etc/tls/private/tls.key
+            - --logtostderr=true
+          ports:
+            - name: https
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          resources: {{- toYaml .Values.kubeRBACProxy.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/tls/private
+              readOnly: true
+        {{- end }}
+      volumes:
+        - name: crio-socket
+          hostPath:
+            path: {{ .Values.exporter.criSocket | replace "unix://" "" }}
+            type: Socket
+        {{- if .Values.storageInspection.enabled }}
+        - name: container-storage
+          hostPath:
+            path: {{ .Values.storageInspection.root }}
+            type: Directory
+        {{- end }}
+        {{- if .Values.kubeRBACProxy.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.service.servingCertSecretName }}
+        {{- end }}
