@@ -1,0 +1,7 @@
+[
+  {"id": "base", "diff-size": 1000},
+  {"id": "appA", "parent": "base", "diff-size": 50},
+  {"id": "appB", "parent": "base", "diff-size": 70},
+  {"id": "appBtop", "parent": "appB", "diff-size": 30},
+  {"id": "orphan", "diff-size": 999}
+]

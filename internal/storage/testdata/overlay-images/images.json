@@ -1,0 +1,4 @@
+[
+  {"id": "aaaaaaaa", "names": ["quay.io/foo/a:v1"], "layer": "appA"},
+  {"id": "bbbbbbbb", "names": ["quay.io/foo/b:v1"], "layer": "appBtop"}
+]
