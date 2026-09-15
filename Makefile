@@ -28,22 +28,22 @@ PLATFORMS ?= linux/amd64,linux/arm64
 .PHONY: image image-multiarch
 
 image:
-	podman build -f Containerfile \
+	podman build -f Dockerfile \
 		--build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION) \
 		-t $(IMAGE):$(VERSION) .
 
 image-multiarch:
-	podman build -f Containerfile --platform $(PLATFORMS) --manifest $(IMAGE):$(VERSION) \
+	podman build -f Dockerfile --platform $(PLATFORMS) --manifest $(IMAGE):$(VERSION) \
 		--build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION) .
 
 # Targets used by CI. docker-build/docker-push take IMG=<full ref> to match the
-# convention the workflows use; they build the same Containerfile as `image`.
+# convention the workflows use; they build the same Dockerfile as `image`.
 .PHONY: docker-build docker-push deadcode
 
 IMG ?= $(IMAGE):$(VERSION)
 
 docker-build:
-	docker build -f Containerfile \
+	docker build -f Dockerfile \
 		--build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION) \
 		-t $(IMG) .
 

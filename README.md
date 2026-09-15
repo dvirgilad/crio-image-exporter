@@ -261,7 +261,7 @@ delta(crio_image_filesystem_used_bytes[6h]) > 0
 ```bash
 make test    # go test ./... -race -count=1
 make build   # binary at bin/crio-image-exporter
-make image   # container image via podman; see Containerfile
+make image   # container image via podman; see Dockerfile
 ```
 
 `make vet` and `make helm-lint` run `go vet` and `helm lint` respectively.
