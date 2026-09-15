@@ -125,7 +125,7 @@ func New(client cri.Client, cfg *config.Config, opts Options) *Collector {
 				nil, nil),
 			imageContainers: prometheus.NewDesc(
 				"crio_image_containers",
-				"Number of containers currently referencing this image.",
+				"Number of containers currently referencing this image. Absent if container listing failed.",
 				[]string{"image_id"}, nil),
 			containersTotal: prometheus.NewDesc(
 				"crio_containers_total",
@@ -193,7 +193,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	// the others from emitting; that is why this is not a chain of early
 	// returns over a shared error.
 	containersByImage, containersOK := c.collectContainers(ctx, ch)
-	apparentTotal, imagesOK := c.collectImages(ctx, ch, containersByImage)
+	apparentTotal, imagesOK := c.collectImages(ctx, ch, containersByImage, containersOK)
 	usedBytes, fsOK := c.collectFilesystems(ctx, ch)
 	versionOK := c.collectRuntimeInfo(ctx, ch)
 
@@ -249,7 +249,7 @@ func (c *Collector) collectContainers(ctx context.Context, ch chan<- prometheus.
 	return byImage, true
 }
 
-func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metric, containersByImage map[string]int) (uint64, bool) {
+func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metric, containersByImage map[string]int, containersOK bool) (uint64, bool) {
 	images, err := c.client.ListImages(ctx)
 	if err != nil {
 		c.recordError("ListImages")
@@ -266,9 +266,13 @@ func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metr
 	for _, img := range images {
 		ch <- prometheus.MustNewConstMetric(c.descs.imageSize, prometheus.GaugeValue, float64(img.Size), img.ID)
 		ch <- prometheus.MustNewConstMetric(c.descs.imagePinned, prometheus.GaugeValue, boolValue(img.Pinned), img.ID)
-		ch <- prometheus.MustNewConstMetric(
-			c.descs.imageContainers, prometheus.GaugeValue,
-			float64(containersByImage[img.ID]), img.ID)
+		// Only emit per-image container counts if container listing succeeded.
+		// If listing failed, the count is unknown rather than zero.
+		if containersOK {
+			ch <- prometheus.MustNewConstMetric(
+				c.descs.imageContainers, prometheus.GaugeValue,
+				float64(containersByImage[img.ID]), img.ID)
+		}
 
 		for _, labels := range infoLabels(img) {
 			ch <- prometheus.MustNewConstMetric(

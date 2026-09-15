@@ -143,7 +143,7 @@ func TestContainerCountsPerImage(t *testing.T) {
 	c := New(f, testConfig(t), Options{})
 
 	want := `
-# HELP crio_image_containers Number of containers currently referencing this image.
+# HELP crio_image_containers Number of containers currently referencing this image. Absent if container listing failed.
 # TYPE crio_image_containers gauge
 crio_image_containers{image_id="sha256:aaa"} 3
 crio_image_containers{image_id="sha256:bbb"} 0
@@ -155,6 +155,25 @@ crio_containers_total{state="running"} 2
 	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
 		"crio_image_containers", "crio_containers_total"); err != nil {
 		t.Error(err)
+	}
+}
+
+// When container listing fails, crio_image_containers must be absent to avoid
+// false signals about image usage.
+func TestContainerCountsAbsentWhenListContainersFails(t *testing.T) {
+	f := &cri.Fake{
+		Images:            []cri.Image{{ID: "sha256:aaa", Size: 100}},
+		ListContainersErr: errors.New("rpc failed"),
+	}
+	c := New(f, testConfig(t), Options{})
+
+	// crio_image_containers must not be emitted when ListContainers failed
+	if got := testutil.CollectAndCount(c, "crio_image_containers"); got != 0 {
+		t.Errorf("crio_image_containers series = %d, want 0 when ListContainers fails", got)
+	}
+	// But crio_image_size_bytes must still be emitted
+	if got := testutil.CollectAndCount(c, "crio_image_size_bytes"); got == 0 {
+		t.Errorf("crio_image_size_bytes must still be emitted when ListContainers fails")
 	}
 }
 
@@ -245,16 +264,106 @@ func TestPartialFailurePerRPC(t *testing.T) {
 			tc.mutate(f)
 			c := New(f, testConfig(t), Options{})
 
-			if got := testutil.CollectAndCount(c, tc.absentMetric); got != 0 {
-				t.Errorf("%s series = %d, want 0", tc.absentMetric, got)
+			// Gather all metrics in one call to verify error counter and absent/present metrics
+			mfs, err := prometheus.Gatherers{newRegistryWith(t, c)}.Gather()
+			if err != nil {
+				t.Fatalf("gather: %v", err)
 			}
-			if got := testutil.CollectAndCount(c, tc.presentMetric); got == 0 {
+
+			hasAbsent := false
+			hasPresent := false
+			var successVal float64
+			var errorCountForRPC float64
+
+			for _, mf := range mfs {
+				name := mf.GetName()
+				if name == tc.absentMetric && len(mf.GetMetric()) > 0 {
+					hasAbsent = true
+				}
+				if name == tc.presentMetric && len(mf.GetMetric()) > 0 {
+					hasPresent = true
+				}
+				if name == "crio_image_exporter_scrape_success" && len(mf.GetMetric()) > 0 {
+					successVal = mf.GetMetric()[0].GetGauge().GetValue()
+				}
+				if name == "crio_image_exporter_cri_errors_total" {
+					for _, m := range mf.GetMetric() {
+						for _, lp := range m.GetLabel() {
+							if lp.GetName() == "rpc" && lp.GetValue() == tc.errLabel {
+								errorCountForRPC = m.GetCounter().GetValue()
+							}
+						}
+					}
+				}
+			}
+
+			if hasAbsent {
+				t.Errorf("%s should not be emitted", tc.absentMetric)
+			}
+			if !hasPresent {
 				t.Errorf("%s must still be emitted when another RPC fails", tc.presentMetric)
 			}
-			if got := testutil.ToFloat64(mustGauge(t, c, "crio_image_exporter_scrape_success")); got != 0 {
-				t.Errorf("scrape_success = %v, want 0", got)
+			if successVal != 0 {
+				t.Errorf("scrape_success = %v, want 0", successVal)
+			}
+			if errorCountForRPC == 0 {
+				t.Errorf("crio_image_exporter_cri_errors_total{rpc=%q} should be > 0", tc.errLabel)
 			}
 		})
+	}
+}
+
+// Error counters must accumulate across scrapes, not reset each scrape.
+func TestErrorCounterAccumulatesAcrossScrapes(t *testing.T) {
+	boom := errors.New("rpc failed")
+	f := &cri.Fake{
+		Images:            []cri.Image{{ID: "sha256:aaa", Size: 100}},
+		ListContainersErr: boom,
+	}
+	c := New(f, testConfig(t), Options{})
+
+	// First scrape: ListContainers fails
+	mfs1, err := prometheus.Gatherers{newRegistryWith(t, c)}.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+
+	var count1 float64
+	for _, mf := range mfs1 {
+		if mf.GetName() == "crio_image_exporter_cri_errors_total" {
+			for _, m := range mf.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == "rpc" && lp.GetValue() == "ListContainers" {
+						count1 = m.GetCounter().GetValue()
+					}
+				}
+			}
+		}
+	}
+	if count1 != 1 {
+		t.Errorf("after 1st scrape: counter = %v, want 1", count1)
+	}
+
+	// Second scrape: same RPC fails again
+	mfs2, err := prometheus.Gatherers{newRegistryWith(t, c)}.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+
+	var count2 float64
+	for _, mf := range mfs2 {
+		if mf.GetName() == "crio_image_exporter_cri_errors_total" {
+			for _, m := range mf.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == "rpc" && lp.GetValue() == "ListContainers" {
+						count2 = m.GetCounter().GetValue()
+					}
+				}
+			}
+		}
+	}
+	if count2 != 2 {
+		t.Errorf("after 2nd scrape: counter = %v, want 2", count2)
 	}
 }
 
