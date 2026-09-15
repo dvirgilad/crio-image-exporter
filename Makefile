@@ -21,3 +21,17 @@ helm-lint:
 
 clean:
 	rm -rf bin/
+
+IMAGE ?= ghcr.io/dvirgilad/crio-image-exporter
+PLATFORMS ?= linux/amd64,linux/arm64
+
+.PHONY: image image-multiarch
+
+image:
+	podman build -f Containerfile \
+		--build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION) \
+		-t $(IMAGE):$(VERSION) .
+
+image-multiarch:
+	podman build -f Containerfile --platform $(PLATFORMS) --manifest $(IMAGE):$(VERSION) \
+		--build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION) .

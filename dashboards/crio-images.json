@@ -1,0 +1,127 @@
+{
+  "title": "CRI-O Image Disk Usage",
+  "uid": "crio-image-exporter",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      },
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "query": "label_values(crio_images_total, instance)",
+        "includeAll": true,
+        "multi": true,
+        "current": {"text": "All", "value": "$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Image filesystem used",
+      "description": "Real deduplicated bytes on the image filesystem. This is the number to alert on.",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "targets": [{"expr": "sum(crio_image_filesystem_used_bytes{instance=~\"$node\"})", "legendFormat": "used"}]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Deduplication ratio",
+      "description": "Apparent image size total divided by real disk. Above 1 means per-image apparent sizes overstate what images actually cost.",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 2}, "overrides": []},
+      "targets": [{"expr": "avg(crio_image_deduplication_ratio{instance=~\"$node\"})", "legendFormat": "ratio"}]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Images",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum(crio_images_total{instance=~\"$node\"})", "legendFormat": "images"}]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Nodes reporting",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "count(crio_image_exporter_scrape_success{instance=~\"$node\"} == 1)", "legendFormat": "healthy"}]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Image filesystem used by node",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "targets": [{"expr": "crio_image_filesystem_used_bytes{instance=~\"$node\"}", "legendFormat": "{{instance}} {{filesystem}}"}]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Top reclaimable images (requires storage inspection)",
+      "description": "Bytes actually freed by deleting the image. Empty when storageInspection is disabled.",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "targets": [{
+        "expr": "topk(15, crio_image_exclusive_size_bytes{instance=~\"$node\"} * on(instance, image_id) group_left(repository, tag) crio_image_info)",
+        "format": "table",
+        "instant": true
+      }]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Top images by apparent size",
+      "description": "Apparent size double-counts shared layers. Use for relative ranking only.",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "targets": [{
+        "expr": "topk(15, crio_image_size_bytes{instance=~\"$node\"} * on(instance, image_id) group_left(repository, tag) crio_image_info)",
+        "format": "table",
+        "instant": true
+      }]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Unreferenced, unpinned images",
+      "description": "No containers use these and the runtime may garbage collect them.",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "targets": [{
+        "expr": "topk(15, crio_image_size_bytes{instance=~\"$node\"} and on(instance, image_id) (crio_image_containers == 0) and on(instance, image_id) (crio_image_pinned == 0))",
+        "format": "table",
+        "instant": true
+      }]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Exporter health",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "crio_image_exporter_scrape_success{instance=~\"$node\"}", "legendFormat": "success {{instance}}"},
+        {"expr": "rate(crio_image_exporter_cri_errors_total{instance=~\"$node\"}[5m])", "legendFormat": "errors {{instance}} {{rpc}}"}
+      ]
+    }
+  ]
+}
