@@ -2,3 +2,4 @@ bin/
 dist/
 *.tar.gz
 docs/superpowers/
+.superpowers/
