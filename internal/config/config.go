@@ -36,6 +36,12 @@ type Config struct {
 	// listener; an exec probe re-running this binary inside the container can.
 	Healthcheck bool
 
+	// HealthcheckPath is the endpoint --healthcheck probes. Liveness must use
+	// /healthz and readiness /readyz: /readyz is gated on CRI having answered,
+	// so pointing liveness at it would restart the pod whenever CRI-O is slow
+	// to come up, which is the restart loop the two endpoints exist to avoid.
+	HealthcheckPath string
+
 	// ImageNameRegexp is the compiled form of ImageNameFilter, nil when empty.
 	ImageNameRegexp *regexp.Regexp
 }
@@ -59,7 +65,8 @@ func Parse(args []string, lookupEnv func(string) (string, bool)) (*Config, error
 	fs.IntVar(&cfg.MaxImages, "max-images", 0, "cap on per-image series; 0 is unlimited")
 	fs.BoolVar(&cfg.DisablePerImage, "disable-per-image", false, "emit aggregates and health metrics only")
 	fs.StringVar(&cfg.LogLevel, "log-level", "info", "log level: debug, info, warn, error")
-	fs.BoolVar(&cfg.Healthcheck, "healthcheck", false, "probe a running instance over loopback and exit 0 (ready) or 1; for container exec probes")
+	fs.BoolVar(&cfg.Healthcheck, "healthcheck", false, "probe a running instance over loopback and exit 0 (healthy) or 1; for container exec probes")
+	fs.StringVar(&cfg.HealthcheckPath, "healthcheck-path", "/readyz", "endpoint --healthcheck probes: /healthz for liveness, /readyz for readiness")
 
 	// Environment fills in before flags parse, so an explicit flag always wins.
 	var envErr error

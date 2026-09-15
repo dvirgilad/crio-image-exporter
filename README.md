@@ -109,6 +109,7 @@ flag > environment > default.
 | `--disable-per-image` | `CRIO_IMAGE_EXPORTER_DISABLE_PER_IMAGE` | `false` | Emit aggregates and health metrics only. |
 | `--log-level` | `CRIO_IMAGE_EXPORTER_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
 | `--healthcheck` | `CRIO_IMAGE_EXPORTER_HEALTHCHECK` | `false` | Probe a running instance over loopback and exit `0`/`1` instead of serving. Used by the chart's exec probes. |
+| `--healthcheck-path` | `CRIO_IMAGE_EXPORTER_HEALTHCHECK_PATH` | `/readyz` | Endpoint `--healthcheck` probes. Liveness uses `/healthz`, readiness `/readyz`. |
 
 The binary also serves `/healthz` (always `200`) and `/readyz` (`200` once
 the CRI connection has been established at least once, and sticky

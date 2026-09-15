@@ -189,6 +189,58 @@ crio_image_containers{image_id="sha256:bbb"} 0
 	}
 }
 
+// A node can present a mixed population: some containers keyed by ImageID,
+// others only by a repo digest. Resolving per key and returning the first
+// match would report whichever group was checked first and silently drop the
+// other.
+func TestContainerCountsMergeMixedImageIDAndDigestKeying(t *testing.T) {
+	const digest = "quay.io/foo/bar@sha256:ddd"
+	f := &cri.Fake{
+		Images: []cri.Image{{ID: "sha256:aaa", RepoDigests: []string{digest}}},
+		Containers: []cri.Container{
+			{ID: "c1", ImageID: "sha256:aaa", State: "running"},
+			{ID: "c2", ImageRef: digest, State: "running"},
+		},
+	}
+	c := New(f, testConfig(t), Options{})
+
+	want := `
+# HELP crio_image_containers Number of containers currently referencing this image. Absent if container listing failed.
+# TYPE crio_image_containers gauge
+crio_image_containers{image_id="sha256:aaa"} 2
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
+		"crio_image_containers"); err != nil {
+		t.Error(err)
+	}
+}
+
+// An image mirrored across registries carries several repo digests, and its
+// containers may reference different ones. All must attribute to that image.
+func TestContainerCountsSpanMultipleRepoDigests(t *testing.T) {
+	const d1 = "quay.io/foo/bar@sha256:ddd"
+	const d2 = "registry.local/foo/bar@sha256:ddd"
+	f := &cri.Fake{
+		Images: []cri.Image{{ID: "sha256:aaa", RepoDigests: []string{d1, d2}}},
+		Containers: []cri.Container{
+			{ID: "c1", ImageRef: d1, State: "running"},
+			{ID: "c2", ImageRef: d2, State: "running"},
+			{ID: "c3", ImageRef: d2, State: "exited"},
+		},
+	}
+	c := New(f, testConfig(t), Options{})
+
+	want := `
+# HELP crio_image_containers Number of containers currently referencing this image. Absent if container listing failed.
+# TYPE crio_image_containers gauge
+crio_image_containers{image_id="sha256:aaa"} 3
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
+		"crio_image_containers"); err != nil {
+		t.Error(err)
+	}
+}
+
 // When a runtime populates both fields, the container must be counted once,
 // resolved by ImageID — not once per identifier.
 func TestContainerCountsPreferImageIDAndDoNotDoubleCount(t *testing.T) {

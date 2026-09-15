@@ -8,6 +8,10 @@ FROM registry.access.redhat.com/ubi9/go-toolset:latest AS build
 
 ARG VERSION=dev
 ARG REVISION=unknown
+# Populated by the builder only when --platform is in play (see the
+# image-multiarch make target). Under a plain `make image` it is empty, and Go
+# treats an empty GOARCH as unset and builds for the host — correct here, but
+# incidental rather than intentional.
 ARG TARGETARCH
 
 USER 0

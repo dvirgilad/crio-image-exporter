@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -59,7 +60,7 @@ func run() error {
 	defer stop()
 
 	if cfg.Healthcheck {
-		if !readyAt(healthcheckURL(cfg.ListenAddress)) {
+		if !readyAt(healthcheckURL(cfg.ListenAddress, cfg.HealthcheckPath)) {
 			os.Exit(1)
 		}
 		return nil
@@ -151,12 +152,18 @@ func watchReadiness(ctx context.Context, client cri.Client, p *probe, log *slog.
 // healthcheckURL builds the readiness URL for an exec probe. The listener may
 // be bound to a wildcard or loopback address; either way the probe runs inside
 // the container, so it dials loopback and only the port matters.
-func healthcheckURL(listenAddress string) string {
+func healthcheckURL(listenAddress, path string) string {
 	port := listenAddress
 	if _, p, err := net.SplitHostPort(listenAddress); err == nil {
 		port = p
 	}
-	return "http://127.0.0.1:" + port + "/readyz"
+	if path == "" {
+		path = "/readyz"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return "http://127.0.0.1:" + port + path
 }
 
 // readyAt reports whether the running exporter answers 200 at url. Any dial

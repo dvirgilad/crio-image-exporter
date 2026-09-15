@@ -254,8 +254,8 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	// Each section reports its own success. A failure in one must not prevent
 	// the others from emitting; that is why this is not a chain of early
 	// returns over a shared error.
-	containersByImage, containersOK := c.collectContainers(ctx, ch)
-	apparentTotal, imagesOK := c.collectImages(ctx, ch, containersByImage, containersOK)
+	containers, containersOK := c.collectContainers(ctx, ch)
+	apparentTotal, imagesOK := c.collectImages(ctx, ch, containers, containersOK)
 	usedBytes, fsOK := c.collectFilesystems(ctx, ch)
 	versionOK := c.collectRuntimeInfo(ctx, ch)
 
@@ -302,49 +302,61 @@ func (c *Collector) recordError(rpc string) {
 // Image.ID), while ImageRef is a digested reference matching an entry of
 // Image.RepoDigests. Counting under both lets containerCount resolve an image
 // whichever one the runtime populated.
-func (c *Collector) collectContainers(ctx context.Context, ch chan<- prometheus.Metric) (map[string]int, bool) {
+func (c *Collector) collectContainers(ctx context.Context, ch chan<- prometheus.Metric) ([]cri.Container, bool) {
 	containers, err := c.client.ListContainers(ctx)
 	if err != nil {
 		c.recordError("ListContainers")
 		return nil, false
 	}
-	byImageKey := make(map[string]int, len(containers)*2)
 	byState := map[string]int{}
 	for _, ctr := range containers {
-		if ctr.ImageID != "" {
-			byImageKey[ctr.ImageID]++
-		}
-		// Guarded so a runtime that sets both fields to the same value does not
-		// count one container twice under a single key.
-		if ctr.ImageRef != "" && ctr.ImageRef != ctr.ImageID {
-			byImageKey[ctr.ImageRef]++
-		}
 		byState[ctr.State]++
 	}
 	for state, n := range byState {
 		ch <- prometheus.MustNewConstMetric(
 			c.descs.containersTotal, prometheus.GaugeValue, float64(n), state)
 	}
-	return byImageKey, true
+	return containers, true
 }
 
-// containerCount resolves how many containers reference img. It prefers the
-// node-local image ID, then falls back to the image's repo digests, because
-// CRI's stricter image_id guarantee is recent and older runtimes may leave it
-// empty while still populating the digested image_ref.
-func containerCount(byImageKey map[string]int, img cri.Image) int {
-	if n, ok := byImageKey[img.ID]; ok {
-		return n
-	}
-	for _, digest := range img.RepoDigests {
-		if n, ok := byImageKey[digest]; ok {
-			return n
+// countContainersByImage attributes every container to exactly one image.
+//
+// CRI names a container's image two ways and they are not interchangeable:
+// ImageID is the node-local identifier matching Image.ID, while ImageRef is a
+// digested reference matching one of Image.RepoDigests. CRI's stricter
+// ImageID guarantee is recent, so older runtimes may populate only ImageRef.
+//
+// Resolving through an index of both — rather than counting per key and
+// picking the first key that matches — is what keeps the count correct when an
+// image carries several repo digests, or when some containers are keyed by ID
+// and others by digest. Each container increments exactly one image.
+func countContainersByImage(images []cri.Image, containers []cri.Container) map[string]int {
+	index := make(map[string]string, len(images)*2)
+	for _, img := range images {
+		index[img.ID] = img.ID
+		for _, digest := range img.RepoDigests {
+			index[digest] = img.ID
 		}
 	}
-	return 0
+
+	counts := make(map[string]int, len(images))
+	for _, ctr := range containers {
+		if ctr.ImageID != "" {
+			if id, ok := index[ctr.ImageID]; ok {
+				counts[id]++
+				continue
+			}
+		}
+		if ctr.ImageRef != "" {
+			if id, ok := index[ctr.ImageRef]; ok {
+				counts[id]++
+			}
+		}
+	}
+	return counts
 }
 
-func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metric, containersByImage map[string]int, containersOK bool) (uint64, bool) {
+func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metric, containers []cri.Container, containersOK bool) (uint64, bool) {
 	images, err := c.client.ListImages(ctx)
 	if err != nil {
 		c.recordError("ListImages")
@@ -358,6 +370,10 @@ func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metr
 	ch <- prometheus.MustNewConstMetric(c.descs.imagesTotal, prometheus.GaugeValue, float64(len(images)))
 	ch <- prometheus.MustNewConstMetric(c.descs.apparentTotal, prometheus.GaugeValue, float64(apparentTotal))
 
+	// Resolved against the full image list, not just the selected subset, so
+	// cardinality controls cannot change a count.
+	containerCounts := countContainersByImage(images, containers)
+
 	selected, truncated := c.selectImages(images)
 	ch <- prometheus.MustNewConstMetric(
 		c.descs.imagesTruncated, prometheus.GaugeValue, float64(truncated))
@@ -370,7 +386,7 @@ func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metr
 		if containersOK {
 			ch <- prometheus.MustNewConstMetric(
 				c.descs.imageContainers, prometheus.GaugeValue,
-				float64(containerCount(containersByImage, img)), img.ID)
+				float64(containerCounts[img.ID]), img.ID)
 		}
 
 		if c.opts.Age != nil {

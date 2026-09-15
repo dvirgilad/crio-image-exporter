@@ -14,13 +14,17 @@ func (s *stubReady) Ready() bool { return s.ready }
 // a loopback-bound listener, so the chart uses an exec probe that re-runs this
 // binary with --healthcheck inside the container. These cover that path.
 func TestHealthcheckURLUsesLoopbackAndListenPort(t *testing.T) {
-	for _, tc := range []struct{ listen, want string }{
-		{"127.0.0.1:8080", "http://127.0.0.1:8080/readyz"},
-		{"0.0.0.0:9100", "http://127.0.0.1:9100/readyz"},
-		{":8080", "http://127.0.0.1:8080/readyz"},
+	for _, tc := range []struct{ listen, path, want string }{
+		{"127.0.0.1:8080", "/readyz", "http://127.0.0.1:8080/readyz"},
+		{"0.0.0.0:9100", "/readyz", "http://127.0.0.1:9100/readyz"},
+		{":8080", "/readyz", "http://127.0.0.1:8080/readyz"},
+		// Liveness must be able to target /healthz: it is not gated on CRI, so
+		// pointing liveness at /readyz would restart the pod on slow CRI start.
+		{"127.0.0.1:8080", "/healthz", "http://127.0.0.1:8080/healthz"},
+		{"127.0.0.1:8080", "", "http://127.0.0.1:8080/readyz"},
 	} {
-		if got := healthcheckURL(tc.listen); got != tc.want {
-			t.Errorf("healthcheckURL(%q) = %q, want %q", tc.listen, got, tc.want)
+		if got := healthcheckURL(tc.listen, tc.path); got != tc.want {
+			t.Errorf("healthcheckURL(%q,%q) = %q, want %q", tc.listen, tc.path, got, tc.want)
 		}
 	}
 }

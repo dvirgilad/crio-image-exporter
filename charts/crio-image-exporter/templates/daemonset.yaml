@@ -70,6 +70,10 @@ spec:
               command:
                 - /usr/local/bin/crio-image-exporter
                 - --healthcheck
+                # /healthz, NOT /readyz: readiness is gated on CRI having
+                # answered, so a liveness probe pointed at it would restart the
+                # pod whenever CRI-O is slow to start.
+                - --healthcheck-path=/healthz
                 - --listen-address={{ include "crio-image-exporter.listenAddress" . }}
             initialDelaySeconds: 5
             periodSeconds: 30
@@ -78,6 +82,7 @@ spec:
               command:
                 - /usr/local/bin/crio-image-exporter
                 - --healthcheck
+                - --healthcheck-path=/readyz
                 - --listen-address={{ include "crio-image-exporter.listenAddress" . }}
             initialDelaySeconds: 5
             periodSeconds: 15
