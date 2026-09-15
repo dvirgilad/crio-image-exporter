@@ -429,3 +429,93 @@ func newRegistryWith(t *testing.T, c prometheus.Collector) *prometheus.Registry 
 	}
 	return r
 }
+
+func TestMaxImagesKeepsLargest(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{
+		{ID: "sha256:small", Size: 10},
+		{ID: "sha256:huge", Size: 1000},
+		{ID: "sha256:mid", Size: 100},
+	}}
+	c := New(f, testConfig(t, "--max-images=1"), Options{})
+
+	want := `
+# HELP crio_image_size_bytes Apparent size of the image in bytes, not deduplicated across shared layers.
+# TYPE crio_image_size_bytes gauge
+crio_image_size_bytes{image_id="sha256:huge"} 1000
+# HELP crio_image_exporter_images_truncated Number of images omitted from per-image series by --max-images.
+# TYPE crio_image_exporter_images_truncated gauge
+crio_image_exporter_images_truncated 2
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
+		"crio_image_size_bytes", "crio_image_exporter_images_truncated"); err != nil {
+		t.Error(err)
+	}
+}
+
+// Truncation must not change the node totals.
+func TestMaxImagesDoesNotAffectAggregates(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{
+		{ID: "sha256:a", Size: 10},
+		{ID: "sha256:b", Size: 1000},
+		{ID: "sha256:c", Size: 100},
+	}}
+	c := New(f, testConfig(t, "--max-images=1"), Options{})
+
+	want := `
+# HELP crio_images_total Number of images present on the node.
+# TYPE crio_images_total gauge
+crio_images_total 3
+# HELP crio_images_apparent_size_bytes_total Sum of apparent image sizes. NOT disk usage; see crio_image_filesystem_used_bytes.
+# TYPE crio_images_apparent_size_bytes_total gauge
+crio_images_apparent_size_bytes_total 1110
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
+		"crio_images_total", "crio_images_apparent_size_bytes_total"); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestImageNameFilter(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{
+		{ID: "sha256:keep", RepoTags: []string{"quay.io/prod/api:v1"}, Size: 10},
+		{ID: "sha256:drop", RepoTags: []string{"docker.io/library/nginx:latest"}, Size: 20},
+	}}
+	c := New(f, testConfig(t, "--image-name-filter=^quay\\.io/prod/"), Options{})
+
+	if got := testutil.CollectAndCount(c, "crio_image_size_bytes"); got != 1 {
+		t.Errorf("size series = %d, want 1", got)
+	}
+	// Aggregates still cover both images.
+	want := `
+# HELP crio_images_total Number of images present on the node.
+# TYPE crio_images_total gauge
+crio_images_total 2
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want), "crio_images_total"); err != nil {
+		t.Error(err)
+	}
+}
+
+// An untagged image cannot match a name filter, so it is excluded.
+func TestImageNameFilterExcludesUntagged(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{{ID: "sha256:untagged", Size: 10}}}
+	c := New(f, testConfig(t, "--image-name-filter=^quay\\.io/"), Options{})
+
+	if got := testutil.CollectAndCount(c, "crio_image_size_bytes"); got != 0 {
+		t.Errorf("size series = %d, want 0", got)
+	}
+}
+
+func TestDisablePerImage(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{{ID: "sha256:aaa", RepoTags: []string{"foo:v1"}, Size: 10}}}
+	c := New(f, testConfig(t, "--disable-per-image"), Options{})
+
+	for _, name := range []string{"crio_image_size_bytes", "crio_image_info", "crio_image_pinned", "crio_image_containers"} {
+		if got := testutil.CollectAndCount(c, name); got != 0 {
+			t.Errorf("%s series = %d, want 0", name, got)
+		}
+	}
+	if got := testutil.CollectAndCount(c, "crio_images_total"); got != 1 {
+		t.Error("aggregates must still be emitted")
+	}
+}

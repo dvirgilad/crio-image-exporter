@@ -6,7 +6,9 @@ package collector
 
 import (
 	"context"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +96,7 @@ type descriptors struct {
 	scrapeDuration  *prometheus.Desc
 	scrapeSuccess   *prometheus.Desc
 	criErrorsTotal  *prometheus.Desc
+	imagesTruncated *prometheus.Desc
 }
 
 func New(client cri.Client, cfg *config.Config, opts Options) *Collector {
@@ -163,6 +166,10 @@ func New(client cri.Client, cfg *config.Config, opts Options) *Collector {
 				"crio_image_exporter_cri_errors_total",
 				"Total CRI RPC failures by RPC name.",
 				[]string{"rpc"}, nil),
+			imagesTruncated: prometheus.NewDesc(
+				"crio_image_exporter_images_truncated",
+				"Number of images omitted from per-image series by --max-images.",
+				nil, nil),
 		},
 	}
 }
@@ -183,6 +190,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.descs.scrapeDuration
 	ch <- c.descs.scrapeSuccess
 	ch <- c.descs.criErrorsTotal
+	ch <- c.descs.imagesTruncated
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
@@ -263,7 +271,11 @@ func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metr
 	ch <- prometheus.MustNewConstMetric(c.descs.imagesTotal, prometheus.GaugeValue, float64(len(images)))
 	ch <- prometheus.MustNewConstMetric(c.descs.apparentTotal, prometheus.GaugeValue, float64(apparentTotal))
 
-	for _, img := range images {
+	selected, truncated := c.selectImages(images)
+	ch <- prometheus.MustNewConstMetric(
+		c.descs.imagesTruncated, prometheus.GaugeValue, float64(truncated))
+
+	for _, img := range selected {
 		ch <- prometheus.MustNewConstMetric(c.descs.imageSize, prometheus.GaugeValue, float64(img.Size), img.ID)
 		ch <- prometheus.MustNewConstMetric(c.descs.imagePinned, prometheus.GaugeValue, boolValue(img.Pinned), img.ID)
 		// Only emit per-image container counts if container listing succeeded.
@@ -363,4 +375,44 @@ func boolValue(b bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// selectImages applies the cardinality controls. The returned slice is the set
+// that gets per-image series; the truncated count is how many were dropped by
+// --max-images specifically. Filtering and truncation never touch the node
+// aggregates, which the caller computes over the full list.
+func (c *Collector) selectImages(images []cri.Image) (selected []cri.Image, truncated int) {
+	if c.cfg.DisablePerImage {
+		return nil, 0
+	}
+
+	selected = images
+	if re := c.cfg.ImageNameRegexp; re != nil {
+		selected = make([]cri.Image, 0, len(images))
+		for _, img := range images {
+			if matchesAnyTag(re, img.RepoTags) {
+				selected = append(selected, img)
+			}
+		}
+	}
+
+	if c.cfg.MaxImages > 0 && len(selected) > c.cfg.MaxImages {
+		// Copy before sorting: the caller's slice is the live CRI response and
+		// aggregates may still be computed from it.
+		sorted := make([]cri.Image, len(selected))
+		copy(sorted, selected)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Size > sorted[j].Size })
+		truncated = len(sorted) - c.cfg.MaxImages
+		selected = sorted[:c.cfg.MaxImages]
+	}
+	return selected, truncated
+}
+
+func matchesAnyTag(re *regexp.Regexp, tags []string) bool {
+	for _, t := range tags {
+		if re.MatchString(t) {
+			return true
+		}
+	}
+	return false
 }
