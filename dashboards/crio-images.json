@@ -79,7 +79,7 @@
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
       "targets": [{
-        "expr": "topk(15, crio_image_exclusive_size_bytes{instance=~\"$node\"} * on(instance, image_id) group_left(repository, tag) crio_image_info)",
+        "expr": "topk(15, crio_image_exclusive_size_bytes{instance=~\"$node\"} * on(instance, image_id) group_right() crio_image_info)",
         "format": "table",
         "instant": true
       }]
@@ -93,7 +93,7 @@
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
       "targets": [{
-        "expr": "topk(15, crio_image_size_bytes{instance=~\"$node\"} * on(instance, image_id) group_left(repository, tag) crio_image_info)",
+        "expr": "topk(15, crio_image_size_bytes{instance=~\"$node\"} * on(instance, image_id) group_right() crio_image_info)",
         "format": "table",
         "instant": true
       }]
