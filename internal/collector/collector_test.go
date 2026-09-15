@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -517,5 +518,47 @@ func TestDisablePerImage(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(c, "crio_images_total"); got != 1 {
 		t.Error("aggregates must still be emitted")
+	}
+}
+
+type stubAge struct {
+	times map[string]time.Time
+	last  time.Time
+}
+
+func (s stubAge) Get(id string) (time.Time, bool) { ts, ok := s.times[id]; return ts, ok }
+func (s stubAge) Len() int                        { return len(s.times) }
+func (s stubAge) LastRefresh() time.Time          { return s.last }
+
+func TestImageCreatedTimestamp(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{{ID: "sha256:aaa"}, {ID: "sha256:unknown"}}}
+	age := stubAge{
+		times: map[string]time.Time{"sha256:aaa": time.Unix(1700000000, 0)},
+		last:  time.Unix(1700000500, 0),
+	}
+	c := New(f, testConfig(t), Options{Age: age})
+
+	want := `
+# HELP crio_image_created_timestamp_seconds Image creation time in Unix seconds. Absent when unavailable.
+# TYPE crio_image_created_timestamp_seconds gauge
+crio_image_created_timestamp_seconds{image_id="sha256:aaa"} 1.7e+09
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
+		"crio_image_created_timestamp_seconds"); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestAgeMetricsAbsentWhenDisabled(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{{ID: "sha256:aaa"}}}
+	c := New(f, testConfig(t), Options{Age: nil})
+
+	for _, name := range []string{
+		"crio_image_created_timestamp_seconds",
+		"crio_image_exporter_age_cache_entries",
+	} {
+		if got := testutil.CollectAndCount(c, name); got != 0 {
+			t.Errorf("%s series = %d, want 0", name, got)
+		}
 	}
 }

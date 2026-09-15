@@ -81,22 +81,25 @@ type Collector struct {
 }
 
 type descriptors struct {
-	imageSize       *prometheus.Desc
-	imageInfo       *prometheus.Desc
-	imagePinned     *prometheus.Desc
-	imagesTotal     *prometheus.Desc
-	apparentTotal   *prometheus.Desc
-	imageContainers *prometheus.Desc
-	containersTotal *prometheus.Desc
-	fsUsedBytes     *prometheus.Desc
-	fsInodesUsed    *prometheus.Desc
-	dedupRatio      *prometheus.Desc
-	runtimeInfo     *prometheus.Desc
-	buildInfo       *prometheus.Desc
-	scrapeDuration  *prometheus.Desc
-	scrapeSuccess   *prometheus.Desc
-	criErrorsTotal  *prometheus.Desc
-	imagesTruncated *prometheus.Desc
+	imageSize           *prometheus.Desc
+	imageInfo           *prometheus.Desc
+	imagePinned         *prometheus.Desc
+	imagesTotal         *prometheus.Desc
+	apparentTotal       *prometheus.Desc
+	imageContainers     *prometheus.Desc
+	imageCreated        *prometheus.Desc
+	containersTotal     *prometheus.Desc
+	fsUsedBytes         *prometheus.Desc
+	fsInodesUsed        *prometheus.Desc
+	dedupRatio          *prometheus.Desc
+	runtimeInfo         *prometheus.Desc
+	buildInfo           *prometheus.Desc
+	scrapeDuration      *prometheus.Desc
+	scrapeSuccess       *prometheus.Desc
+	criErrorsTotal      *prometheus.Desc
+	imagesTruncated     *prometheus.Desc
+	ageCacheEntries     *prometheus.Desc
+	ageRefreshTimestamp *prometheus.Desc
 }
 
 func New(client cri.Client, cfg *config.Config, opts Options) *Collector {
@@ -170,6 +173,18 @@ func New(client cri.Client, cfg *config.Config, opts Options) *Collector {
 				"crio_image_exporter_images_truncated",
 				"Number of images omitted from per-image series by --max-images.",
 				nil, nil),
+			imageCreated: prometheus.NewDesc(
+				"crio_image_created_timestamp_seconds",
+				"Image creation time in Unix seconds. Absent when unavailable.",
+				[]string{"image_id"}, nil),
+			ageCacheEntries: prometheus.NewDesc(
+				"crio_image_exporter_age_cache_entries",
+				"Number of entries in the image age cache.",
+				nil, nil),
+			ageRefreshTimestamp: prometheus.NewDesc(
+				"crio_image_exporter_age_refresh_timestamp_seconds",
+				"Unix time of the last successful image age refresh.",
+				nil, nil),
 		},
 	}
 }
@@ -181,6 +196,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.descs.imagesTotal
 	ch <- c.descs.apparentTotal
 	ch <- c.descs.imageContainers
+	ch <- c.descs.imageCreated
 	ch <- c.descs.containersTotal
 	ch <- c.descs.fsUsedBytes
 	ch <- c.descs.fsInodesUsed
@@ -191,6 +207,8 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.descs.scrapeSuccess
 	ch <- c.descs.criErrorsTotal
 	ch <- c.descs.imagesTruncated
+	ch <- c.descs.ageCacheEntries
+	ch <- c.descs.ageRefreshTimestamp
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
@@ -286,6 +304,13 @@ func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metr
 				float64(containersByImage[img.ID]), img.ID)
 		}
 
+		if c.opts.Age != nil {
+			if ts, ok := c.opts.Age.Get(img.ID); ok {
+				ch <- prometheus.MustNewConstMetric(
+					c.descs.imageCreated, prometheus.GaugeValue, float64(ts.Unix()), img.ID)
+			}
+		}
+
 		for _, labels := range infoLabels(img) {
 			ch <- prometheus.MustNewConstMetric(
 				c.descs.imageInfo, prometheus.GaugeValue, 1,
@@ -324,9 +349,20 @@ func (c *Collector) collectRuntimeInfo(ctx context.Context, ch chan<- prometheus
 	return true
 }
 
-// collectStorage and collectAgeCacheHealth are filled in by Tasks 7 and 9.
-func (c *Collector) collectStorage(chan<- prometheus.Metric)        {}
-func (c *Collector) collectAgeCacheHealth(chan<- prometheus.Metric) {}
+// collectStorage is filled in by Task 9.
+func (c *Collector) collectStorage(chan<- prometheus.Metric) {}
+
+func (c *Collector) collectAgeCacheHealth(ch chan<- prometheus.Metric) {
+	if c.opts.Age == nil {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(
+		c.descs.ageCacheEntries, prometheus.GaugeValue, float64(c.opts.Age.Len()))
+	if ts := c.opts.Age.LastRefresh(); !ts.IsZero() {
+		ch <- prometheus.MustNewConstMetric(
+			c.descs.ageRefreshTimestamp, prometheus.GaugeValue, float64(ts.Unix()))
+	}
+}
 
 type infoLabelSet struct {
 	imageID, repository, tag, digest string
