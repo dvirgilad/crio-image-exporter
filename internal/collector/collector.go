@@ -6,6 +6,7 @@ package collector
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -78,11 +79,21 @@ type Collector struct {
 }
 
 type descriptors struct {
-	imageSize     *prometheus.Desc
-	imageInfo     *prometheus.Desc
-	imagePinned   *prometheus.Desc
-	imagesTotal   *prometheus.Desc
-	apparentTotal *prometheus.Desc
+	imageSize       *prometheus.Desc
+	imageInfo       *prometheus.Desc
+	imagePinned     *prometheus.Desc
+	imagesTotal     *prometheus.Desc
+	apparentTotal   *prometheus.Desc
+	imageContainers *prometheus.Desc
+	containersTotal *prometheus.Desc
+	fsUsedBytes     *prometheus.Desc
+	fsInodesUsed    *prometheus.Desc
+	dedupRatio      *prometheus.Desc
+	runtimeInfo     *prometheus.Desc
+	buildInfo       *prometheus.Desc
+	scrapeDuration  *prometheus.Desc
+	scrapeSuccess   *prometheus.Desc
+	criErrorsTotal  *prometheus.Desc
 }
 
 func New(client cri.Client, cfg *config.Config, opts Options) *Collector {
@@ -112,6 +123,46 @@ func New(client cri.Client, cfg *config.Config, opts Options) *Collector {
 				"crio_images_apparent_size_bytes_total",
 				"Sum of apparent image sizes. NOT disk usage; see crio_image_filesystem_used_bytes.",
 				nil, nil),
+			imageContainers: prometheus.NewDesc(
+				"crio_image_containers",
+				"Number of containers currently referencing this image.",
+				[]string{"image_id"}, nil),
+			containersTotal: prometheus.NewDesc(
+				"crio_containers_total",
+				"Number of containers on the node by state.",
+				[]string{"state"}, nil),
+			fsUsedBytes: prometheus.NewDesc(
+				"crio_image_filesystem_used_bytes",
+				"Real bytes used on the image filesystem.",
+				[]string{"filesystem"}, nil),
+			fsInodesUsed: prometheus.NewDesc(
+				"crio_image_filesystem_inodes_used",
+				"Inodes used on the image filesystem.",
+				[]string{"filesystem"}, nil),
+			dedupRatio: prometheus.NewDesc(
+				"crio_image_deduplication_ratio",
+				"Apparent image size total divided by real filesystem bytes used. Values above 1 mean per-image apparent sizes overstate disk.",
+				nil, nil),
+			runtimeInfo: prometheus.NewDesc(
+				"crio_runtime_info",
+				"Container runtime identification.",
+				[]string{"runtime_name", "runtime_version", "api_version"}, nil),
+			buildInfo: prometheus.NewDesc(
+				"crio_image_exporter_build_info",
+				"Exporter build identification.",
+				[]string{"version", "revision", "go_version"}, nil),
+			scrapeDuration: prometheus.NewDesc(
+				"crio_image_exporter_scrape_duration_seconds",
+				"Duration of the last scrape.",
+				nil, nil),
+			scrapeSuccess: prometheus.NewDesc(
+				"crio_image_exporter_scrape_success",
+				"Whether every CRI call in the last scrape succeeded.",
+				nil, nil),
+			criErrorsTotal: prometheus.NewDesc(
+				"crio_image_exporter_cri_errors_total",
+				"Total CRI RPC failures by RPC name.",
+				[]string{"rpc"}, nil),
 		},
 	}
 }
@@ -122,11 +173,53 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.descs.imagePinned
 	ch <- c.descs.imagesTotal
 	ch <- c.descs.apparentTotal
+	ch <- c.descs.imageContainers
+	ch <- c.descs.containersTotal
+	ch <- c.descs.fsUsedBytes
+	ch <- c.descs.fsInodesUsed
+	ch <- c.descs.dedupRatio
+	ch <- c.descs.runtimeInfo
+	ch <- c.descs.buildInfo
+	ch <- c.descs.scrapeDuration
+	ch <- c.descs.scrapeSuccess
+	ch <- c.descs.criErrorsTotal
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	ctx := context.Background()
-	c.collectImages(ctx, ch)
+	start := time.Now()
+
+	// Each section reports its own success. A failure in one must not prevent
+	// the others from emitting; that is why this is not a chain of early
+	// returns over a shared error.
+	containersByImage, containersOK := c.collectContainers(ctx, ch)
+	apparentTotal, imagesOK := c.collectImages(ctx, ch, containersByImage)
+	usedBytes, fsOK := c.collectFilesystems(ctx, ch)
+	versionOK := c.collectRuntimeInfo(ctx, ch)
+
+	// The ratio needs both halves and a non-zero denominator. Emitting +Inf
+	// would poison dashboards, so an unknown ratio is simply absent.
+	if imagesOK && fsOK && usedBytes > 0 {
+		ch <- prometheus.MustNewConstMetric(
+			c.descs.dedupRatio, prometheus.GaugeValue,
+			float64(apparentTotal)/float64(usedBytes))
+	}
+
+	c.collectStorage(ch)
+	c.collectAgeCacheHealth(ch)
+
+	success := containersOK && imagesOK && fsOK && versionOK
+	ch <- prometheus.MustNewConstMetric(c.descs.scrapeSuccess, prometheus.GaugeValue, boolValue(success))
+	ch <- prometheus.MustNewConstMetric(c.descs.scrapeDuration, prometheus.GaugeValue, time.Since(start).Seconds())
+	ch <- prometheus.MustNewConstMetric(
+		c.descs.buildInfo, prometheus.GaugeValue, 1,
+		c.opts.Version, c.opts.Revision, runtime.Version())
+
+	c.mu.Lock()
+	for rpc, n := range c.criErrors {
+		ch <- prometheus.MustNewConstMetric(c.descs.criErrorsTotal, prometheus.CounterValue, n, rpc)
+	}
+	c.mu.Unlock()
 }
 
 // recordError increments the persistent per-RPC error counter.
@@ -136,11 +229,31 @@ func (c *Collector) recordError(rpc string) {
 	c.mu.Unlock()
 }
 
-func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metric) {
+// collectContainers returns a count of containers per image ID.
+func (c *Collector) collectContainers(ctx context.Context, ch chan<- prometheus.Metric) (map[string]int, bool) {
+	containers, err := c.client.ListContainers(ctx)
+	if err != nil {
+		c.recordError("ListContainers")
+		return nil, false
+	}
+	byImage := make(map[string]int, len(containers))
+	byState := map[string]int{}
+	for _, ctr := range containers {
+		byImage[ctr.ImageRef]++
+		byState[ctr.State]++
+	}
+	for state, n := range byState {
+		ch <- prometheus.MustNewConstMetric(
+			c.descs.containersTotal, prometheus.GaugeValue, float64(n), state)
+	}
+	return byImage, true
+}
+
+func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metric, containersByImage map[string]int) (uint64, bool) {
 	images, err := c.client.ListImages(ctx)
 	if err != nil {
 		c.recordError("ListImages")
-		return
+		return 0, false
 	}
 
 	var apparentTotal uint64
@@ -151,10 +264,11 @@ func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metr
 	ch <- prometheus.MustNewConstMetric(c.descs.apparentTotal, prometheus.GaugeValue, float64(apparentTotal))
 
 	for _, img := range images {
+		ch <- prometheus.MustNewConstMetric(c.descs.imageSize, prometheus.GaugeValue, float64(img.Size), img.ID)
+		ch <- prometheus.MustNewConstMetric(c.descs.imagePinned, prometheus.GaugeValue, boolValue(img.Pinned), img.ID)
 		ch <- prometheus.MustNewConstMetric(
-			c.descs.imageSize, prometheus.GaugeValue, float64(img.Size), img.ID)
-		ch <- prometheus.MustNewConstMetric(
-			c.descs.imagePinned, prometheus.GaugeValue, boolValue(img.Pinned), img.ID)
+			c.descs.imageContainers, prometheus.GaugeValue,
+			float64(containersByImage[img.ID]), img.ID)
 
 		for _, labels := range infoLabels(img) {
 			ch <- prometheus.MustNewConstMetric(
@@ -162,7 +276,41 @@ func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metr
 				labels.imageID, labels.repository, labels.tag, labels.digest)
 		}
 	}
+	return apparentTotal, true
 }
+
+func (c *Collector) collectFilesystems(ctx context.Context, ch chan<- prometheus.Metric) (uint64, bool) {
+	filesystems, err := c.client.ImageFsInfo(ctx)
+	if err != nil {
+		c.recordError("ImageFsInfo")
+		return 0, false
+	}
+	var total uint64
+	for _, fs := range filesystems {
+		ch <- prometheus.MustNewConstMetric(
+			c.descs.fsUsedBytes, prometheus.GaugeValue, float64(fs.UsedBytes), fs.Mountpoint)
+		ch <- prometheus.MustNewConstMetric(
+			c.descs.fsInodesUsed, prometheus.GaugeValue, float64(fs.InodesUsed), fs.Mountpoint)
+		total += fs.UsedBytes
+	}
+	return total, true
+}
+
+func (c *Collector) collectRuntimeInfo(ctx context.Context, ch chan<- prometheus.Metric) bool {
+	info, err := c.client.Version(ctx)
+	if err != nil {
+		c.recordError("Version")
+		return false
+	}
+	ch <- prometheus.MustNewConstMetric(
+		c.descs.runtimeInfo, prometheus.GaugeValue, 1,
+		info.Name, info.Version, info.APIVersion)
+	return true
+}
+
+// collectStorage and collectAgeCacheHealth are filled in by Tasks 7 and 9.
+func (c *Collector) collectStorage(chan<- prometheus.Metric)        {}
+func (c *Collector) collectAgeCacheHealth(chan<- prometheus.Metric) {}
 
 type infoLabelSet struct {
 	imageID, repository, tag, digest string
