@@ -19,7 +19,7 @@ Per-image metrics are labeled with `image_id` only. Names live in
 `crio_image_info`, because an image can carry several repo tags and putting
 them on the size metric would make `sum()` count that image once per tag.
 
-    crio_image_size_bytes * on(image_id) group_right() crio_image_info
+    crio_image_size_bytes * on(instance, image_id) group_right() crio_image_info
 
 `crio_image_size_bytes` emits one series per `image_id`; `crio_image_info`
 emits one series per repo tag, so it is the "many" side of the match and
@@ -30,9 +30,12 @@ needing to be named in the modifier. Getting this backwards
 single-tag images and fails with "found duplicate series for the match group"
 on any multi-tag image — exactly the case this join exists for.
 
-Across multiple nodes, join on `instance` too:
+`instance` is in the matcher because this exporter is a DaemonSet: the same
+`image_id` appears once per node, and matching on `image_id` alone makes the
+left side many-to-one for the same reason described above. Drop `instance`
+only when the query is already scoped to a single node:
 
-    crio_image_size_bytes * on(instance, image_id) group_right() crio_image_info
+    crio_image_size_bytes * on(image_id) group_right() crio_image_info
 
 ---
 

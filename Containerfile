@@ -1,3 +1,9 @@
+# NOTE: this builder must provide Go >= the `go` directive in go.mod (1.26,
+# set by k8s.io/cri-api). A builder with an older toolchain either silently
+# downloads one — defeating -trimpath's reproducibility — or hard-fails under
+# GOTOOLCHAIN=local. Pin this to a concrete tag once you have confirmed one
+# that satisfies that minimum; :latest is used here only because the tag list
+# could not be verified offline.
 FROM registry.access.redhat.com/ubi9/go-toolset:latest AS build
 
 ARG VERSION=dev

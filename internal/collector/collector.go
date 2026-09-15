@@ -285,30 +285,63 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 }
 
 // recordError increments the persistent per-RPC error counter.
+// RecordError increments the CRI error counter for rpc. Exported so the
+// background refreshers can report their own RPC failures into the same
+// crio_image_exporter_cri_errors_total series the scrape path uses.
+func (c *Collector) RecordError(rpc string) { c.recordError(rpc) }
+
 func (c *Collector) recordError(rpc string) {
 	c.mu.Lock()
 	c.criErrors[rpc]++
 	c.mu.Unlock()
 }
 
-// collectContainers returns a count of containers per image ID.
+// collectContainers counts containers under every identifier CRI might use to
+// name their image. CRI exposes two distinct fields and they are not
+// interchangeable: ImageID is the node-local image identifier (matching
+// Image.ID), while ImageRef is a digested reference matching an entry of
+// Image.RepoDigests. Counting under both lets containerCount resolve an image
+// whichever one the runtime populated.
 func (c *Collector) collectContainers(ctx context.Context, ch chan<- prometheus.Metric) (map[string]int, bool) {
 	containers, err := c.client.ListContainers(ctx)
 	if err != nil {
 		c.recordError("ListContainers")
 		return nil, false
 	}
-	byImage := make(map[string]int, len(containers))
+	byImageKey := make(map[string]int, len(containers)*2)
 	byState := map[string]int{}
 	for _, ctr := range containers {
-		byImage[ctr.ImageRef]++
+		if ctr.ImageID != "" {
+			byImageKey[ctr.ImageID]++
+		}
+		// Guarded so a runtime that sets both fields to the same value does not
+		// count one container twice under a single key.
+		if ctr.ImageRef != "" && ctr.ImageRef != ctr.ImageID {
+			byImageKey[ctr.ImageRef]++
+		}
 		byState[ctr.State]++
 	}
 	for state, n := range byState {
 		ch <- prometheus.MustNewConstMetric(
 			c.descs.containersTotal, prometheus.GaugeValue, float64(n), state)
 	}
-	return byImage, true
+	return byImageKey, true
+}
+
+// containerCount resolves how many containers reference img. It prefers the
+// node-local image ID, then falls back to the image's repo digests, because
+// CRI's stricter image_id guarantee is recent and older runtimes may leave it
+// empty while still populating the digested image_ref.
+func containerCount(byImageKey map[string]int, img cri.Image) int {
+	if n, ok := byImageKey[img.ID]; ok {
+		return n
+	}
+	for _, digest := range img.RepoDigests {
+		if n, ok := byImageKey[digest]; ok {
+			return n
+		}
+	}
+	return 0
 }
 
 func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metric, containersByImage map[string]int, containersOK bool) (uint64, bool) {
@@ -337,7 +370,7 @@ func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metr
 		if containersOK {
 			ch <- prometheus.MustNewConstMetric(
 				c.descs.imageContainers, prometheus.GaugeValue,
-				float64(containersByImage[img.ID]), img.ID)
+				float64(containerCount(containersByImage, img)), img.ID)
 		}
 
 		if c.opts.Age != nil {
@@ -425,14 +458,18 @@ func (c *Collector) emitStorageSizes(ch chan<- prometheus.Metric, imageID string
 		return
 	}
 	key := strings.TrimPrefix(imageID, "sha256:")
-	exclusive, ok := att.Exclusive[key]
-	if !ok {
+	// Both lookups are checked rather than relying on internal/storage writing
+	// the two maps together: an unchecked Shared read would emit a false zero
+	// in the one metric family whose whole purpose is exactness.
+	exclusive, exclusiveOK := att.Exclusive[key]
+	shared, sharedOK := att.Shared[key]
+	if !exclusiveOK || !sharedOK {
 		return
 	}
 	ch <- prometheus.MustNewConstMetric(
 		c.descs.imageExclusive, prometheus.GaugeValue, float64(exclusive), imageID)
 	ch <- prometheus.MustNewConstMetric(
-		c.descs.imageShared, prometheus.GaugeValue, float64(att.Shared[key]), imageID)
+		c.descs.imageShared, prometheus.GaugeValue, float64(shared), imageID)
 }
 
 func (c *Collector) collectAgeCacheHealth(ch chan<- prometheus.Metric) {

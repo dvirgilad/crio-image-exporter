@@ -112,6 +112,46 @@ func TestRefreshFailsWhenListImagesFails(t *testing.T) {
 	}
 }
 
+// The spec requires failures to degrade to "metric absent for that image" AND
+// increment crio_image_exporter_cri_errors_total. Without the sink, a CRI-O
+// version whose verbose blob changed shape would make image ages vanish
+// fleet-wide while scrape_success stayed 1 — a silent loss.
+func TestErrorSinkFiresOnBothFailurePaths(t *testing.T) {
+	t.Run("per-image ImageStatus failure", func(t *testing.T) {
+		f := &cri.Fake{
+			Images:  []cri.Image{{ID: "sha256:good"}, {ID: "sha256:bad"}},
+			Created: map[string]time.Time{"sha256:good": time.Unix(1000, 0)},
+		}
+		c := New(f, time.Minute, quietLogger())
+		var got []string
+		c.SetErrorSink(func(rpc string) { got = append(got, rpc) })
+
+		if err := c.Refresh(context.Background()); err != nil {
+			t.Fatalf("Refresh: %v", err)
+		}
+		if len(got) != 1 || got[0] != "ImageStatus" {
+			t.Errorf("sink calls = %v, want [ImageStatus]", got)
+		}
+		// The good image must still be cached — one bad image cannot deny the rest.
+		if _, ok := c.Get("sha256:good"); !ok {
+			t.Error("good image should still be cached")
+		}
+	})
+
+	t.Run("ListImages failure", func(t *testing.T) {
+		c := New(&cri.Fake{ListImagesErr: errors.New("boom")}, time.Minute, quietLogger())
+		var got []string
+		c.SetErrorSink(func(rpc string) { got = append(got, rpc) })
+
+		if err := c.Refresh(context.Background()); err == nil {
+			t.Fatal("expected error")
+		}
+		if len(got) != 1 || got[0] != "ListImages" {
+			t.Errorf("sink calls = %v, want [ListImages]", got)
+		}
+	})
+}
+
 func TestRunStopsOnContextCancel(t *testing.T) {
 	f := &cri.Fake{}
 	c := New(f, time.Millisecond, quietLogger())

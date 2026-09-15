@@ -35,9 +35,9 @@ spec:
           args:
             {{- if .Values.kubeRBACProxy.enabled }}
             # Bound to loopback: only the sidecar may reach it.
-            - --listen-address=127.0.0.1:8080
+            - --listen-address={{ include "crio-image-exporter.listenAddress" . }}
             {{- else }}
-            - --listen-address=0.0.0.0:8080
+            - --listen-address={{ include "crio-image-exporter.listenAddress" . }}
             {{- end }}
             - --cri-socket={{ .Values.exporter.criSocket }}
             - --cri-timeout={{ .Values.exporter.criTimeout }}
@@ -61,12 +61,24 @@ spec:
               containerPort: 8080
               protocol: TCP
             {{- end }}
+          # Exec probes, not httpGet: kubelet runs HTTP probes from the NODE's
+          # network namespace, so it cannot reach a listener bound to the
+          # container's loopback. Re-running the binary with --healthcheck runs
+          # inside the container, where loopback is the right namespace.
           livenessProbe:
-            httpGet: {path: /healthz, port: 8080, host: 127.0.0.1}
+            exec:
+              command:
+                - /usr/local/bin/crio-image-exporter
+                - --healthcheck
+                - --listen-address={{ include "crio-image-exporter.listenAddress" . }}
             initialDelaySeconds: 5
             periodSeconds: 30
           readinessProbe:
-            httpGet: {path: /readyz, port: 8080, host: 127.0.0.1}
+            exec:
+              command:
+                - /usr/local/bin/crio-image-exporter
+                - --healthcheck
+                - --listen-address={{ include "crio-image-exporter.listenAddress" . }}
             initialDelaySeconds: 5
             periodSeconds: 15
           resources: {{- toYaml .Values.resources | nindent 12 }}
@@ -95,10 +107,16 @@ spec:
               protocol: TCP
           resources: {{- toYaml .Values.kubeRBACProxy.resources | nindent 12 }}
           securityContext:
+            # The proxy needs no host access at all, so unlike the exporter it
+            # runs non-root. RuntimeDefault is required by restricted Pod
+            # Security Admission.
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           volumeMounts:
             - name: tls
               mountPath: /etc/tls/private

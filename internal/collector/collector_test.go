@@ -136,9 +136,9 @@ func TestContainerCountsPerImage(t *testing.T) {
 	f := &cri.Fake{
 		Images: []cri.Image{{ID: "sha256:aaa"}, {ID: "sha256:bbb"}},
 		Containers: []cri.Container{
-			{ID: "c1", ImageRef: "sha256:aaa", State: "running"},
-			{ID: "c2", ImageRef: "sha256:aaa", State: "running"},
-			{ID: "c3", ImageRef: "sha256:aaa", State: "exited"},
+			{ID: "c1", ImageID: "sha256:aaa", State: "running"},
+			{ID: "c2", ImageID: "sha256:aaa", State: "running"},
+			{ID: "c3", ImageID: "sha256:aaa", State: "exited"},
 		},
 	}
 	c := New(f, testConfig(t), Options{})
@@ -155,6 +155,59 @@ crio_containers_total{state="running"} 2
 `
 	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
 		"crio_image_containers", "crio_containers_total"); err != nil {
+		t.Error(err)
+	}
+}
+
+// CRI's ImageRef is a DIGESTED reference, not an image ID, and older runtimes
+// may leave ImageID empty. Counting by ImageRef alone against Image.ID never
+// matches, which would report every image as having zero containers — and a
+// zero here reads as "unreferenced, safe to delete".
+func TestContainerCountsResolveViaRepoDigestWhenImageIDEmpty(t *testing.T) {
+	const digest = "quay.io/foo/bar@sha256:ddd"
+	f := &cri.Fake{
+		Images: []cri.Image{
+			{ID: "sha256:aaa", RepoDigests: []string{digest}},
+			{ID: "sha256:bbb"},
+		},
+		Containers: []cri.Container{
+			{ID: "c1", ImageRef: digest, State: "running"},
+			{ID: "c2", ImageRef: digest, State: "running"},
+		},
+	}
+	c := New(f, testConfig(t), Options{})
+
+	want := `
+# HELP crio_image_containers Number of containers currently referencing this image. Absent if container listing failed.
+# TYPE crio_image_containers gauge
+crio_image_containers{image_id="sha256:aaa"} 2
+crio_image_containers{image_id="sha256:bbb"} 0
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
+		"crio_image_containers"); err != nil {
+		t.Error(err)
+	}
+}
+
+// When a runtime populates both fields, the container must be counted once,
+// resolved by ImageID — not once per identifier.
+func TestContainerCountsPreferImageIDAndDoNotDoubleCount(t *testing.T) {
+	const digest = "quay.io/foo/bar@sha256:ddd"
+	f := &cri.Fake{
+		Images: []cri.Image{{ID: "sha256:aaa", RepoDigests: []string{digest}}},
+		Containers: []cri.Container{
+			{ID: "c1", ImageID: "sha256:aaa", ImageRef: digest, State: "running"},
+		},
+	}
+	c := New(f, testConfig(t), Options{})
+
+	want := `
+# HELP crio_image_containers Number of containers currently referencing this image. Absent if container listing failed.
+# TYPE crio_image_containers gauge
+crio_image_containers{image_id="sha256:aaa"} 1
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
+		"crio_image_containers"); err != nil {
 		t.Error(err)
 	}
 }
@@ -259,7 +312,7 @@ func TestPartialFailurePerRPC(t *testing.T) {
 			f := &cri.Fake{
 				Images:      []cri.Image{{ID: "sha256:aaa", Size: 100}},
 				Filesystems: []cri.Filesystem{{Mountpoint: "/x", UsedBytes: 50}},
-				Containers:  []cri.Container{{ID: "c1", ImageRef: "sha256:aaa", State: "running"}},
+				Containers:  []cri.Container{{ID: "c1", ImageID: "sha256:aaa", State: "running"}},
 				Runtime:     cri.RuntimeInfo{Name: "cri-o", Version: "1.30.0"},
 			}
 			tc.mutate(f)

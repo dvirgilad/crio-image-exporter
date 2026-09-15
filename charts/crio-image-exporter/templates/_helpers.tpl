@@ -25,3 +25,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "crio-image-exporter.serviceAccountName" -}}
 {{ include "crio-image-exporter.fullname" . }}
 {{- end -}}
+
+{{/*
+The address the exporter binds. Loopback when kube-rbac-proxy fronts it, so
+only the sidecar can reach it; otherwise the pod IP. Shared by the container
+args and the exec health probes so the two can never drift.
+*/}}
+{{- define "crio-image-exporter.listenAddress" -}}
+{{- if .Values.kubeRBACProxy.enabled -}}
+127.0.0.1:8080
+{{- else -}}
+0.0.0.0:8080
+{{- end -}}
+{{- end -}}

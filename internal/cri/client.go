@@ -92,6 +92,7 @@ func (c *GRPCClient) ListContainers(ctx context.Context) ([]Container, error) {
 	for _, ctr := range resp.GetContainers() {
 		out = append(out, Container{
 			ID:       ctr.GetId(),
+			ImageID:  ctr.GetImageId(),
 			ImageRef: ctr.GetImageRef(),
 			State:    containerState(ctr.GetState()),
 		})

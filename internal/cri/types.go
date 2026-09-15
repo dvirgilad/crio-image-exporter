@@ -29,7 +29,14 @@ type Filesystem struct {
 // Container is a container known to the runtime.
 type Container struct {
 	ID string
-	// ImageRef is the image ID this container runs, matching Image.ID.
+	// ImageID is the node-local identifier of the image this container runs.
+	// CRI defines it as "the unique identifier of the image on the node", which
+	// must match Image.ID. It may be empty on older runtimes, which is why
+	// ImageRef exists as a fallback.
+	ImageID string
+	// ImageRef is a DIGESTED reference to the image, e.g.
+	// "quay.io/foo/bar@sha256:...". It matches an entry of Image.RepoDigests,
+	// NOT Image.ID. Comparing it against Image.ID never succeeds.
 	ImageRef string
 	// State is the lowercase CRI state: created, running, exited, unknown.
 	State string

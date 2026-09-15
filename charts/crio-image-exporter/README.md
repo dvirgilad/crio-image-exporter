@@ -116,7 +116,7 @@ Largest reclaimable images on each node:
 
 ```promql
 topk(10, crio_image_exclusive_size_bytes)
-  * on(image_id) group_right() crio_image_info
+  * on(instance, image_id) group_right() crio_image_info
 ```
 
 `crio_image_info` emits one series per repo tag, so it is the "many" side of

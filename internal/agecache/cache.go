@@ -19,10 +19,24 @@ type Cache struct {
 	client   cri.Client
 	interval time.Duration
 	log      *slog.Logger
+	onError  func(rpc string)
 
 	mu          sync.RWMutex
 	created     map[string]time.Time
 	lastRefresh time.Time
+}
+
+// SetErrorSink registers a callback invoked with the failing CRI RPC's name
+// whenever this cache cannot reach or parse the runtime. Without it, a CRI-O
+// version whose verbose blob changed shape would make image ages vanish
+// fleet-wide with no metric signal at all. Call before Run; it is not
+// safe for concurrent use with a running refresh loop.
+func (c *Cache) SetErrorSink(fn func(rpc string)) { c.onError = fn }
+
+func (c *Cache) reportError(rpc string) {
+	if c.onError != nil {
+		c.onError(rpc)
+	}
 }
 
 func New(client cri.Client, interval time.Duration, log *slog.Logger) *Cache {
@@ -61,6 +75,7 @@ func (c *Cache) Run(ctx context.Context) {
 func (c *Cache) Refresh(ctx context.Context) error {
 	images, err := c.client.ListImages(ctx)
 	if err != nil {
+		c.reportError("ListImages")
 		return fmt.Errorf("list images: %w", err)
 	}
 
@@ -84,6 +99,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 			// Per-image failure is expected and tolerable — the verbose blob
 			// is not a stable contract. The metric is simply absent.
 			c.log.Debug("image creation time unavailable", "image_id", id, "error", err)
+			c.reportError("ImageStatus")
 			continue
 		}
 		fetched[id] = ts

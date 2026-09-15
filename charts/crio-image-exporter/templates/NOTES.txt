@@ -20,4 +20,4 @@ connection. Escalate one rung at a time:
 Query example -- largest reclaimable images on each node:
 
   topk(10, crio_image_exclusive_size_bytes)
-    * on(image_id) group_right() crio_image_info
+    * on(instance, image_id) group_right() crio_image_info

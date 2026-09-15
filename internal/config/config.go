@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -19,7 +18,7 @@ type Config struct {
 	MetricsPath   string
 	CRITimeout    time.Duration
 
-	CollectImageAge        bool
+	CollectImageAge         bool
 	ImageAgeRefreshInterval time.Duration
 
 	StorageRoot            string
@@ -30,6 +29,12 @@ type Config struct {
 	DisablePerImage bool
 
 	LogLevel string
+
+	// Healthcheck makes the binary probe an already-running instance over
+	// loopback and exit 0/1 instead of serving. Kubelet runs HTTP probes from
+	// the node's network namespace, so it cannot reach a loopback-bound
+	// listener; an exec probe re-running this binary inside the container can.
+	Healthcheck bool
 
 	// ImageNameRegexp is the compiled form of ImageNameFilter, nil when empty.
 	ImageNameRegexp *regexp.Regexp
@@ -54,6 +59,7 @@ func Parse(args []string, lookupEnv func(string) (string, bool)) (*Config, error
 	fs.IntVar(&cfg.MaxImages, "max-images", 0, "cap on per-image series; 0 is unlimited")
 	fs.BoolVar(&cfg.DisablePerImage, "disable-per-image", false, "emit aggregates and health metrics only")
 	fs.StringVar(&cfg.LogLevel, "log-level", "info", "log level: debug, info, warn, error")
+	fs.BoolVar(&cfg.Healthcheck, "healthcheck", false, "probe a running instance over loopback and exit 0 (ready) or 1; for container exec probes")
 
 	// Environment fills in before flags parse, so an explicit flag always wins.
 	var envErr error
@@ -86,7 +92,7 @@ func envKey(flagName string) string {
 
 func (c *Config) validate() error {
 	if c.MaxImages < 0 {
-		return fmt.Errorf("max-images must be >= 0, got %s", strconv.Itoa(c.MaxImages))
+		return fmt.Errorf("max-images must be >= 0, got %d", c.MaxImages)
 	}
 	if c.CRITimeout <= 0 {
 		return fmt.Errorf("cri-timeout must be positive, got %s", c.CRITimeout)

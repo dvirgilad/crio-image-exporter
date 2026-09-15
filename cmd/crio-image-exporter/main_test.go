@@ -10,6 +10,43 @@ type stubReady struct{ ready bool }
 
 func (s *stubReady) Ready() bool { return s.ready }
 
+// Kubelet runs HTTP probes from the node's network namespace and cannot reach
+// a loopback-bound listener, so the chart uses an exec probe that re-runs this
+// binary with --healthcheck inside the container. These cover that path.
+func TestHealthcheckURLUsesLoopbackAndListenPort(t *testing.T) {
+	for _, tc := range []struct{ listen, want string }{
+		{"127.0.0.1:8080", "http://127.0.0.1:8080/readyz"},
+		{"0.0.0.0:9100", "http://127.0.0.1:9100/readyz"},
+		{":8080", "http://127.0.0.1:8080/readyz"},
+	} {
+		if got := healthcheckURL(tc.listen); got != tc.want {
+			t.Errorf("healthcheckURL(%q) = %q, want %q", tc.listen, got, tc.want)
+		}
+	}
+}
+
+func TestReadyAtReflectsStatus(t *testing.T) {
+	ready := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ready.Close()
+	notReady := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer notReady.Close()
+
+	if !readyAt(ready.URL) {
+		t.Error("readyAt should be true for 200")
+	}
+	if readyAt(notReady.URL) {
+		t.Error("readyAt should be false for 503")
+	}
+	// An unreachable exporter must fail the probe, not hang or panic.
+	if readyAt("http://127.0.0.1:1/readyz") {
+		t.Error("readyAt should be false when nothing is listening")
+	}
+}
+
 func TestHealthzAlwaysOK(t *testing.T) {
 	srv := httptest.NewServer(newMux("/metrics", nil, &stubReady{}))
 	defer srv.Close()

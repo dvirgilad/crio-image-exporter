@@ -5,7 +5,7 @@ LDFLAGS := -s -w \
 	-X main.version=$(VERSION) \
 	-X main.revision=$(REVISION)
 
-.PHONY: build test vet lint helm-lint clean
+.PHONY: build test vet helm-lint clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o bin/$(BINARY) ./cmd/crio-image-exporter

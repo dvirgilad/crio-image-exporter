@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -57,6 +58,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if cfg.Healthcheck {
+		if !readyAt(healthcheckURL(cfg.ListenAddress)) {
+			os.Exit(1)
+		}
+		return nil
+	}
+
 	client, err := cri.Dial(ctx, cfg.CRISocket, cfg.CRITimeout)
 	if err != nil {
 		return fmt.Errorf("connect to CRI: %w", err)
@@ -65,9 +73,12 @@ func run() error {
 
 	opts := collector.Options{Version: version, Revision: revision}
 
+	// The age cache is constructed here but started below, after the collector
+	// exists, so its RPC failures can be reported into the same error counter
+	// the scrape path uses rather than being logged and lost.
+	var cache *agecache.Cache
 	if cfg.CollectImageAge {
-		cache := agecache.New(client, cfg.ImageAgeRefreshInterval, log)
-		go cache.Run(ctx)
+		cache = agecache.New(client, cfg.ImageAgeRefreshInterval, log)
 		opts.Age = cache
 	}
 	if cfg.StorageEnabled() {
@@ -80,11 +91,17 @@ func run() error {
 	p := &probe{}
 	go watchReadiness(ctx, client, p, log)
 
+	coll := collector.New(client, cfg, opts)
+	if cache != nil {
+		cache.SetErrorSink(coll.RecordError)
+		go cache.Run(ctx)
+	}
+
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		collector.New(client, cfg, opts),
+		coll,
 	)
 
 	srv := &http.Server{
@@ -129,6 +146,29 @@ func watchReadiness(ctx context.Context, client cri.Client, p *probe, log *slog.
 		case <-ticker.C:
 		}
 	}
+}
+
+// healthcheckURL builds the readiness URL for an exec probe. The listener may
+// be bound to a wildcard or loopback address; either way the probe runs inside
+// the container, so it dials loopback and only the port matters.
+func healthcheckURL(listenAddress string) string {
+	port := listenAddress
+	if _, p, err := net.SplitHostPort(listenAddress); err == nil {
+		port = p
+	}
+	return "http://127.0.0.1:" + port + "/readyz"
+}
+
+// readyAt reports whether the running exporter answers 200 at url. Any dial
+// error, timeout or non-200 means not ready.
+func readyAt(url string) bool {
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func newMux(metricsPath string, registry *prometheus.Registry, r readiness) *http.ServeMux {

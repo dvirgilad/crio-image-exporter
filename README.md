@@ -76,13 +76,16 @@ plausible, works for single-tag images, and fails on every multi-tag image
 with "found duplicate series for the match group".
 
 ```promql
-crio_image_size_bytes * on(image_id) group_right() crio_image_info
+crio_image_size_bytes * on(instance, image_id) group_right() crio_image_info
 ```
 
-Across multiple nodes, join on `instance` too:
+This exporter is a DaemonSet, so `instance` belongs in the matcher on any
+cluster with more than one node: without it, the same `image_id` appears once
+per node on the left and Prometheus errors for the same many-to-one reason.
+Only drop it when you have already restricted the query to a single node:
 
 ```promql
-crio_image_size_bytes * on(instance, image_id) group_right() crio_image_info
+crio_image_size_bytes * on(image_id) group_right() crio_image_info
 ```
 
 ## 5. Configuration
@@ -105,11 +108,19 @@ flag > environment > default.
 | `--max-images` | `CRIO_IMAGE_EXPORTER_MAX_IMAGES` | `0` | Cap on per-image series; `0` is unlimited. |
 | `--disable-per-image` | `CRIO_IMAGE_EXPORTER_DISABLE_PER_IMAGE` | `false` | Emit aggregates and health metrics only. |
 | `--log-level` | `CRIO_IMAGE_EXPORTER_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
+| `--healthcheck` | `CRIO_IMAGE_EXPORTER_HEALTHCHECK` | `false` | Probe a running instance over loopback and exit `0`/`1` instead of serving. Used by the chart's exec probes. |
 
 The binary also serves `/healthz` (always `200`) and `/readyz` (`200` once
 the CRI connection has been established at least once, and sticky
 thereafter — a later CRI hiccup shows up as `crio_image_exporter_scrape_success=0`,
 not as the pod leaving service).
+
+The chart probes these with **exec** probes that re-run the binary with
+`--healthcheck`, not with `httpGet`. Kubelet runs HTTP probes from the *node's*
+network namespace, so it cannot reach a listener bound to the container's
+loopback — and when `kube-rbac-proxy` fronts the exporter, loopback is exactly
+where it binds. An exec probe runs inside the container, where loopback is the
+right namespace.
 
 ## 6. Exact size attribution
 
