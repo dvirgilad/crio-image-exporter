@@ -562,3 +562,104 @@ func TestAgeMetricsAbsentWhenDisabled(t *testing.T) {
 		}
 	}
 }
+
+type stubStorage struct {
+	att  *Attribution
+	errs map[string]float64
+}
+
+func (s stubStorage) Snapshot() *Attribution     { return s.att }
+func (s stubStorage) Errors() map[string]float64 { return s.errs }
+
+func TestExclusiveAndSharedSizes(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{{ID: "sha256:aaa", Size: 1050}}}
+	st := stubStorage{att: &Attribution{
+		// Keyed on bare hex, as containers/storage stores it.
+		Exclusive:         map[string]uint64{"aaa": 50},
+		Shared:            map[string]uint64{"aaa": 1000},
+		TotalDeduplicated: 2149,
+		LayerCount:        5,
+		RefreshedAt:       time.Unix(1700000000, 0),
+	}}
+	c := New(f, testConfig(t), Options{Storage: st})
+
+	want := `
+# HELP crio_image_exclusive_size_bytes Bytes reclaimed if this image is deleted; layers referenced by no other image.
+# TYPE crio_image_exclusive_size_bytes gauge
+crio_image_exclusive_size_bytes{image_id="sha256:aaa"} 50
+# HELP crio_image_shared_size_bytes Bytes in layers this image shares with at least one other image.
+# TYPE crio_image_shared_size_bytes gauge
+crio_image_shared_size_bytes{image_id="sha256:aaa"} 1000
+# HELP crio_images_deduplicated_size_bytes_total Sum of distinct layer sizes on the node. Real bytes held by images.
+# TYPE crio_images_deduplicated_size_bytes_total gauge
+crio_images_deduplicated_size_bytes_total 2149
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
+		"crio_image_exclusive_size_bytes", "crio_image_shared_size_bytes",
+		"crio_images_deduplicated_size_bytes_total"); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestStorageMetricsAbsentWhenDisabled(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{{ID: "sha256:aaa", Size: 100}}}
+	c := New(f, testConfig(t), Options{Storage: nil})
+
+	for _, name := range []string{
+		"crio_image_exclusive_size_bytes",
+		"crio_image_shared_size_bytes",
+		"crio_images_deduplicated_size_bytes_total",
+	} {
+		if got := testutil.CollectAndCount(c, name); got != 0 {
+			t.Errorf("%s series = %d, want 0", name, got)
+		}
+	}
+	// Everything else keeps working.
+	if got := testutil.CollectAndCount(c, "crio_image_size_bytes"); got != 1 {
+		t.Error("apparent size must still be emitted without storage inspection")
+	}
+}
+
+// Before the first successful parse the snapshot is nil. Metrics must be
+// absent, not zero — zero would read as "nothing reclaimable".
+func TestStorageMetricsAbsentBeforeFirstSnapshot(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{{ID: "sha256:aaa", Size: 100}}}
+	c := New(f, testConfig(t), Options{Storage: stubStorage{att: nil}})
+
+	if got := testutil.CollectAndCount(c, "crio_image_exclusive_size_bytes"); got != 0 {
+		t.Errorf("exclusive series = %d, want 0", got)
+	}
+}
+
+// An image present in CRI but missing from the storage graph must not emit a
+// misleading zero.
+func TestStorageMetricsAbsentForUnknownImage(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{{ID: "sha256:ghost", Size: 100}}}
+	st := stubStorage{att: &Attribution{
+		Exclusive: map[string]uint64{"aaa": 50},
+		Shared:    map[string]uint64{"aaa": 1000},
+	}}
+	c := New(f, testConfig(t), Options{Storage: st})
+
+	if got := testutil.CollectAndCount(c, "crio_image_exclusive_size_bytes"); got != 0 {
+		t.Errorf("exclusive series = %d, want 0", got)
+	}
+}
+
+// Parse failures must be visible even when no snapshot has ever loaded —
+// that is precisely when the operator needs to know why metrics are missing.
+func TestStorageErrorsReportedWithoutSnapshot(t *testing.T) {
+	f := &cri.Fake{Images: []cri.Image{{ID: "sha256:aaa", Size: 100}}}
+	st := stubStorage{att: nil, errs: map[string]float64{"parse": 3}}
+	c := New(f, testConfig(t), Options{Storage: st})
+
+	want := `
+# HELP crio_image_exporter_storage_errors_total Total storage graph parse failures by reason.
+# TYPE crio_image_exporter_storage_errors_total counter
+crio_image_exporter_storage_errors_total{reason="parse"} 3
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want),
+		"crio_image_exporter_storage_errors_total"); err != nil {
+		t.Error(err)
+	}
+}

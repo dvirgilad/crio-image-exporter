@@ -81,25 +81,31 @@ type Collector struct {
 }
 
 type descriptors struct {
-	imageSize           *prometheus.Desc
-	imageInfo           *prometheus.Desc
-	imagePinned         *prometheus.Desc
-	imagesTotal         *prometheus.Desc
-	apparentTotal       *prometheus.Desc
-	imageContainers     *prometheus.Desc
-	imageCreated        *prometheus.Desc
-	containersTotal     *prometheus.Desc
-	fsUsedBytes         *prometheus.Desc
-	fsInodesUsed        *prometheus.Desc
-	dedupRatio          *prometheus.Desc
-	runtimeInfo         *prometheus.Desc
-	buildInfo           *prometheus.Desc
-	scrapeDuration      *prometheus.Desc
-	scrapeSuccess       *prometheus.Desc
-	criErrorsTotal      *prometheus.Desc
-	imagesTruncated     *prometheus.Desc
-	ageCacheEntries     *prometheus.Desc
-	ageRefreshTimestamp *prometheus.Desc
+	imageSize               *prometheus.Desc
+	imageInfo               *prometheus.Desc
+	imagePinned             *prometheus.Desc
+	imagesTotal             *prometheus.Desc
+	apparentTotal           *prometheus.Desc
+	imageContainers         *prometheus.Desc
+	imageCreated            *prometheus.Desc
+	containersTotal         *prometheus.Desc
+	fsUsedBytes             *prometheus.Desc
+	fsInodesUsed            *prometheus.Desc
+	dedupRatio              *prometheus.Desc
+	runtimeInfo             *prometheus.Desc
+	buildInfo               *prometheus.Desc
+	scrapeDuration          *prometheus.Desc
+	scrapeSuccess           *prometheus.Desc
+	criErrorsTotal          *prometheus.Desc
+	imagesTruncated         *prometheus.Desc
+	ageCacheEntries         *prometheus.Desc
+	ageRefreshTimestamp     *prometheus.Desc
+	imageExclusive          *prometheus.Desc
+	imageShared             *prometheus.Desc
+	dedupTotal              *prometheus.Desc
+	storageLayers           *prometheus.Desc
+	storageRefreshTimestamp *prometheus.Desc
+	storageErrorsTotal      *prometheus.Desc
 }
 
 func New(client cri.Client, cfg *config.Config, opts Options) *Collector {
@@ -185,6 +191,30 @@ func New(client cri.Client, cfg *config.Config, opts Options) *Collector {
 				"crio_image_exporter_age_refresh_timestamp_seconds",
 				"Unix time of the last successful image age refresh.",
 				nil, nil),
+			imageExclusive: prometheus.NewDesc(
+				"crio_image_exclusive_size_bytes",
+				"Bytes reclaimed if this image is deleted; layers referenced by no other image.",
+				[]string{"image_id"}, nil),
+			imageShared: prometheus.NewDesc(
+				"crio_image_shared_size_bytes",
+				"Bytes in layers this image shares with at least one other image.",
+				[]string{"image_id"}, nil),
+			dedupTotal: prometheus.NewDesc(
+				"crio_images_deduplicated_size_bytes_total",
+				"Sum of distinct layer sizes on the node. Real bytes held by images.",
+				nil, nil),
+			storageLayers: prometheus.NewDesc(
+				"crio_image_exporter_storage_layers",
+				"Number of distinct layers in the storage graph.",
+				nil, nil),
+			storageRefreshTimestamp: prometheus.NewDesc(
+				"crio_image_exporter_storage_refresh_timestamp_seconds",
+				"Unix time of the last successful storage graph parse.",
+				nil, nil),
+			storageErrorsTotal: prometheus.NewDesc(
+				"crio_image_exporter_storage_errors_total",
+				"Total storage graph parse failures by reason.",
+				[]string{"reason"}, nil),
 		},
 	}
 }
@@ -209,6 +239,12 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.descs.imagesTruncated
 	ch <- c.descs.ageCacheEntries
 	ch <- c.descs.ageRefreshTimestamp
+	ch <- c.descs.imageExclusive
+	ch <- c.descs.imageShared
+	ch <- c.descs.dedupTotal
+	ch <- c.descs.storageLayers
+	ch <- c.descs.storageRefreshTimestamp
+	ch <- c.descs.storageErrorsTotal
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
@@ -311,6 +347,8 @@ func (c *Collector) collectImages(ctx context.Context, ch chan<- prometheus.Metr
 			}
 		}
 
+		c.emitStorageSizes(ch, img.ID)
+
 		for _, labels := range infoLabels(img) {
 			ch <- prometheus.MustNewConstMetric(
 				c.descs.imageInfo, prometheus.GaugeValue, 1,
@@ -349,8 +387,53 @@ func (c *Collector) collectRuntimeInfo(ctx context.Context, ch chan<- prometheus
 	return true
 }
 
-// collectStorage is filled in by Task 9.
-func (c *Collector) collectStorage(chan<- prometheus.Metric) {}
+func (c *Collector) collectStorage(ch chan<- prometheus.Metric) {
+	if c.opts.Storage == nil {
+		return
+	}
+	// Errors are reported even before a first successful parse: a graph that
+	// has never loaded is exactly when you most want to see the failures.
+	for reason, n := range c.opts.Storage.Errors() {
+		ch <- prometheus.MustNewConstMetric(
+			c.descs.storageErrorsTotal, prometheus.CounterValue, n, reason)
+	}
+	att := c.opts.Storage.Snapshot()
+	if att == nil {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(
+		c.descs.dedupTotal, prometheus.GaugeValue, float64(att.TotalDeduplicated))
+	ch <- prometheus.MustNewConstMetric(
+		c.descs.storageLayers, prometheus.GaugeValue, float64(att.LayerCount))
+	if !att.RefreshedAt.IsZero() {
+		ch <- prometheus.MustNewConstMetric(
+			c.descs.storageRefreshTimestamp, prometheus.GaugeValue, float64(att.RefreshedAt.Unix()))
+	}
+}
+
+// emitStorageSizes looks up exact attribution for one image. Attribution is
+// keyed on the bare hex ID that containers/storage uses, while CRI reports
+// "sha256:"-prefixed IDs, so the prefix is stripped before lookup. An image
+// absent from the graph emits nothing: a zero would read as "nothing
+// reclaimable", which is a different and wrong claim.
+func (c *Collector) emitStorageSizes(ch chan<- prometheus.Metric, imageID string) {
+	if c.opts.Storage == nil {
+		return
+	}
+	att := c.opts.Storage.Snapshot()
+	if att == nil {
+		return
+	}
+	key := strings.TrimPrefix(imageID, "sha256:")
+	exclusive, ok := att.Exclusive[key]
+	if !ok {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(
+		c.descs.imageExclusive, prometheus.GaugeValue, float64(exclusive), imageID)
+	ch <- prometheus.MustNewConstMetric(
+		c.descs.imageShared, prometheus.GaugeValue, float64(att.Shared[key]), imageID)
+}
 
 func (c *Collector) collectAgeCacheHealth(ch chan<- prometheus.Metric) {
 	if c.opts.Age == nil {
