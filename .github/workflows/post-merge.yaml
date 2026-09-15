@@ -1,0 +1,45 @@
+name: post-merge
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'examples/**'
+      - 'images/**'
+      - 'LICENSE'
+      - 'OWNERS'
+
+env:
+  REGISTRY: ghcr.io
+  REPOSITORY_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push-image:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push docker image
+        run: make docker-build docker-push IMG=${{ env.REGISTRY }}/${{ env.REPOSITORY_NAME }}:main
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.REGISTRY }}/${{ env.REPOSITORY_NAME }}:main'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'

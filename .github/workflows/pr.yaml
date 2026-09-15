@@ -1,0 +1,40 @@
+name: tests
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, reopened, synchronize]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'examples/**'
+      - 'images/**'
+      - 'LICENSE'
+      - 'OWNERS'
+
+jobs:
+  unit-test:
+    name: unit-test
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7.0.1
+
+    - name: Cache Go tools
+      uses: actions/cache@v6
+      with:
+        path: |
+          ./bin
+        key: ${{ runner.os }}-tools-${{ hashFiles('Makefile') }}
+        restore-keys: |
+          ${{ runner.os }}-tools-
+
+    - name: Setup Go
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: go.mod
+        cache: true
+        cache-dependency-path: go.sum
+
+    - name: Run unit-tests
+      run: make test

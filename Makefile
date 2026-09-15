@@ -35,3 +35,22 @@ image:
 image-multiarch:
 	podman build -f Containerfile --platform $(PLATFORMS) --manifest $(IMAGE):$(VERSION) \
 		--build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION) .
+
+# Targets used by CI. docker-build/docker-push take IMG=<full ref> to match the
+# convention the workflows use; they build the same Containerfile as `image`.
+.PHONY: docker-build docker-push deadcode
+
+IMG ?= $(IMAGE):$(VERSION)
+
+docker-build:
+	docker build -f Containerfile \
+		--build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION) \
+		-t $(IMG) .
+
+docker-push:
+	docker push $(IMG)
+
+# Reports unreachable functions. Installed on demand so the repo needs no
+# vendored tooling.
+deadcode:
+	go run golang.org/x/tools/cmd/deadcode@latest -test ./...
