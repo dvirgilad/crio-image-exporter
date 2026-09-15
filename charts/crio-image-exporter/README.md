@@ -116,8 +116,14 @@ Largest reclaimable images on each node:
 
 ```promql
 topk(10, crio_image_exclusive_size_bytes)
-  * on(image_id) group_left(repository, tag) crio_image_info
+  * on(image_id) group_right() crio_image_info
 ```
+
+`crio_image_info` emits one series per repo tag, so it is the "many" side of
+the match and belongs on the right of `group_right`, which pulls its
+`repository`/`tag`/`digest` labels onto the result automatically. The
+`group_left(repository, tag)` form works for single-tag images but errors on
+any multi-tag image with "found duplicate series for the match group".
 
 This join is necessary because per-image size metrics are labeled only with `image_id`, while human-readable names live in `crio_image_info` (since a single image can have multiple repo:tag labels and summing would multi-count).
 

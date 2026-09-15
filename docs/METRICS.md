@@ -19,11 +19,20 @@ Per-image metrics are labeled with `image_id` only. Names live in
 `crio_image_info`, because an image can carry several repo tags and putting
 them on the size metric would make `sum()` count that image once per tag.
 
-    crio_image_size_bytes * on(image_id) group_left(repository, tag) crio_image_info
+    crio_image_size_bytes * on(image_id) group_right() crio_image_info
+
+`crio_image_size_bytes` emits one series per `image_id`; `crio_image_info`
+emits one series per repo tag, so it is the "many" side of the match and
+belongs on the right of `group_right`. The result inherits `crio_image_info`'s
+full label set, so `repository`, `tag` and `digest` come through without
+needing to be named in the modifier. Getting this backwards
+(`group_left(repository, tag)` with `crio_image_info` on the right) works for
+single-tag images and fails with "found duplicate series for the match group"
+on any multi-tag image — exactly the case this join exists for.
 
 Across multiple nodes, join on `instance` too:
 
-    crio_image_size_bytes * on(instance, image_id) group_left(repository, tag) crio_image_info
+    crio_image_size_bytes * on(instance, image_id) group_right() crio_image_info
 
 ---
 

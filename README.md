@@ -68,16 +68,21 @@ age collection.
 | `crio_image_exporter_scrape_success` | gauge | `1` if the last scrape's CRI calls all succeeded. |
 
 Per-image metrics carry only an `image_id` label. Names live in
-`crio_image_info`, so join before you look at anything by name:
+`crio_image_info`, so join before you look at anything by name. Note the
+operand order: `crio_image_info` emits one series per repo tag, so it is the
+"many" side and must be on the right of `group_right` — writing
+`group_left(repository, tag)` with `crio_image_info` on the right looks
+plausible, works for single-tag images, and fails on every multi-tag image
+with "found duplicate series for the match group".
 
 ```promql
-crio_image_size_bytes * on(image_id) group_left(repository, tag) crio_image_info
+crio_image_size_bytes * on(image_id) group_right() crio_image_info
 ```
 
 Across multiple nodes, join on `instance` too:
 
 ```promql
-crio_image_size_bytes * on(instance, image_id) group_left(repository, tag) crio_image_info
+crio_image_size_bytes * on(instance, image_id) group_right() crio_image_info
 ```
 
 ## 5. Configuration
@@ -216,13 +221,13 @@ Top reclaimable images across the fleet (requires storage inspection):
 
 ```promql
 topk(10, crio_image_exclusive_size_bytes)
-  * on(instance, image_id) group_left(repository, tag) crio_image_info
+  * on(instance, image_id) group_right() crio_image_info
 ```
 
 Unreferenced images — present on disk, used by no running container:
 
 ```promql
-crio_image_size_bytes * on(instance, image_id) group_left(repository, tag) crio_image_info
+crio_image_size_bytes * on(instance, image_id) group_right() crio_image_info
   and on(instance, image_id) crio_image_containers == 0
 ```
 
@@ -230,7 +235,7 @@ Images older than 30 days:
 
 ```promql
 (time() - crio_image_created_timestamp_seconds > 30 * 86400)
-  * on(instance, image_id) group_left(repository, tag) crio_image_info
+  * on(instance, image_id) group_right() crio_image_info
 ```
 
 Nodes whose real image disk usage is growing (over the last 6 hours):
