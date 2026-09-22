@@ -35,21 +35,38 @@ storageInspection:
   root: /var/lib/containers/storage
   refreshInterval: 5m
 
-# OpenShift SCC binding. No SCC object is created; this binds the builtin
-# hostmount-anyuid, which permits hostPath volumes and an arbitrary UID.
+# OpenShift SCC binding. No SCC object is created; this binds a BUILTIN SCC.
 #
-# SELinux escalation ladder — start at the top, move down only if the pod logs
-# "permission denied" dialing the socket:
-#   1. hostmount-anyuid with no seLinuxOptions  (this default)
-#   2. set podSecurityContext.seLinuxOptions.type: spc_t
-#   3. set scc.name: privileged
+# Why `privileged` and not `hostmount-anyuid`: reaching crio.sock is an SELinux
+# problem, not a UID one. The socket is root-owned 0660, so running as UID 0
+# already satisfies the file permissions — but CRI-O's socket is labelled such
+# that the default `container_t` type is denied `connectto`, and that MAC denial
+# surfaces as "permission denied" even for root.
+#
+# Escaping `container_t` requires requesting `seLinuxOptions.type: spc_t`, and an
+# SCC only permits that if its seLinuxContext strategy is RunAsAny.
+# `hostmount-anyuid` inherits `restricted`'s `MustRunAs`, which *validates
+# against* the allocated options and rejects a pod asking for spc_t outright.
+# Among the builtin SCCs only `privileged` has `seLinuxContext: RunAsAny`.
+#
+# Binding `privileged` is a permission CEILING, not an instruction: the pod below
+# still runs unprivileged, drops every capability, uses a read-only root
+# filesystem and forbids privilege escalation. It only gains the ability to ask
+# for the SELinux type it needs.
+#
+# The alternative — a custom SCC pinning `seLinuxOptions.type: spc_t` with
+# `MustRunAs` — is tighter, at the cost of the chart creating and owning a
+# cluster-scoped object. Set scc.create=false and bind your own if you prefer it.
 scc:
   create: true
-  name: hostmount-anyuid
+  name: privileged
 
-podSecurityContext: {}
-  # seLinuxOptions:
-  #   type: spc_t
+# spc_t ("super privileged container") is the SELinux type permitted to talk to
+# the container runtime. Without it the exporter cannot open crio.sock, no
+# matter which UID it runs as.
+podSecurityContext:
+  seLinuxOptions:
+    type: spc_t
 
 securityContext:
   # crio.sock is root-owned mode 0660, so the process must run as UID 0.

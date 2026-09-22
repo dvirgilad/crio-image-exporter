@@ -509,24 +509,6 @@ crio_runtime_info{api_version="v1",runtime_name="cri-o",runtime_version="1.30.0"
 	}
 }
 
-// mustGauge extracts a single-series metric from c as a standalone collector.
-func mustGauge(t *testing.T, c *Collector, name string) prometheus.Collector {
-	t.Helper()
-	g := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: name + "_extracted"}, nil)
-	mfs, err := prometheus.Gatherers{newRegistryWith(t, c)}.Gather()
-	if err != nil {
-		t.Fatalf("gather: %v", err)
-	}
-	for _, mf := range mfs {
-		if mf.GetName() == name {
-			g.WithLabelValues().Set(mf.GetMetric()[0].GetGauge().GetValue())
-			return g
-		}
-	}
-	t.Fatalf("metric %s not found", name)
-	return nil
-}
-
 func newRegistryWith(t *testing.T, c prometheus.Collector) *prometheus.Registry {
 	t.Helper()
 	r := prometheus.NewRegistry()

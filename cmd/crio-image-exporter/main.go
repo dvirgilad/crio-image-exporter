@@ -70,7 +70,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("connect to CRI: %w", err)
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			log.Warn("closing CRI connection", "error", err)
+		}
+	}()
 
 	opts := collector.Options{Version: version, Revision: revision}
 
@@ -174,7 +178,7 @@ func readyAt(url string) bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -189,16 +193,16 @@ func newMux(metricsPath string, registry *prometheus.Registry, r readiness) *htt
 	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "ok")
+		_, _ = fmt.Fprintln(w, "ok")
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if !r.Ready() {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintln(w, "CRI connection not yet established")
+			_, _ = fmt.Fprintln(w, "CRI connection not yet established")
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "ok")
+		_, _ = fmt.Fprintln(w, "ok")
 	})
 	return mux
 }

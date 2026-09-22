@@ -18,7 +18,11 @@ spec:
       scheme: https
       interval: {{ .Values.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
-      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      # Not bearerTokenFile: OpenShift's Prometheus rejects a ServiceMonitor
+      # that reads the token off disk. The Secret is created by this chart.
+      bearerTokenSecret:
+        name: {{ include "crio-image-exporter.fullname" . }}-token
+        key: token
       tlsConfig:
         # The service CA bundle, injected by OpenShift into monitoring pods.
         caFile: /etc/prometheus/configmaps/serving-certs-ca-bundle/service-ca.crt

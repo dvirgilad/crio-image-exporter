@@ -4,14 +4,14 @@ A Prometheus exporter for CRI-O image disk usage, deployed as a DaemonSet on Ope
 
 ## Overview
 
-`crio-image-exporter` runs as a DaemonSet pod on each node, interrogating the local CRI-O runtime via its Unix socket to report per-image disk usage metrics. On OpenShift, it requires binding to the builtin `hostmount-anyuid` SecurityContextConstraint.
+`crio-image-exporter` runs as a DaemonSet pod on each node, interrogating the local CRI-O runtime via its Unix socket to report per-image disk usage metrics. On OpenShift it binds the builtin `privileged` SecurityContextConstraint — not to run privileged, but because it is the only builtin SCC permitting the `spc_t` SELinux type the CRI socket requires.
 
 This chart provides:
 - **DaemonSet** with secure defaults (read-only root filesystem, dropped capabilities, UID 0 for socket access)
 - **Optional kube-rbac-proxy sidecar** for TLS termination and API server-based authorization on OpenShift
 - **Optional storage inspection** for exact per-image attribution (vs. apparent sizes)
-- **SELinux escalation path** exposed as values for environments where `container_t` cannot reach `crio.sock`
-- **ServiceMonitor** integration for Prometheus Operator
+- **SELinux handling** for the CRI socket, which `container_t` cannot reach (see below)
+- **ServiceMonitor** integration for Prometheus Operator, authenticating with a `bearerTokenSecret`
 
 ## Installation
 
@@ -52,9 +52,9 @@ helm install crio-image-exporter ./charts/crio-image-exporter \
 | `storageInspection.enabled` | bool | `false` | Enable exact per-image attribution by reading container storage metadata. |
 | `storageInspection.root` | string | `/var/lib/containers/storage` | Container storage root path. |
 | `storageInspection.refreshInterval` | string | `5m` | Interval to refresh storage metadata. |
-| `scc.create` | bool | `true` | Create RBAC Role and RoleBinding for the builtin `hostmount-anyuid` SCC. |
-| `scc.name` | string | `hostmount-anyuid` | Name of the builtin SCC to bind (escalate to `privileged` if SELinux is blocking). |
-| `podSecurityContext` | object | `{}` | Pod-level security context (e.g., `seLinuxOptions.type: spc_t` if SELinux blocks socket access). |
+| `scc.create` | bool | `true` | Create RBAC Role and RoleBinding granting use of the builtin SCC named by `scc.name`. |
+| `scc.name` | string | `privileged` | Builtin SCC to bind. Must allow `seLinuxContext: RunAsAny` so the pod can request `spc_t`; see SELinux section. |
+| `podSecurityContext.seLinuxOptions.type` | string | `spc_t` | SELinux type. Required to reach `crio.sock`; `container_t` is denied. Needs an SCC with `seLinuxContext: RunAsAny`. |
 | `securityContext.runAsUser` | int | `0` | Run as UID 0 (required: `crio.sock` is root-owned mode 0660). |
 | `securityContext.allowPrivilegeEscalation` | bool | `false` | Disable privilege escalation. |
 | `securityContext.readOnlyRootFilesystem` | bool | `true` | Mount root filesystem as read-only. |
@@ -79,25 +79,48 @@ helm install crio-image-exporter ./charts/crio-image-exporter \
 | `updateStrategy.type` | string | `RollingUpdate` | DaemonSet update strategy. |
 | `updateStrategy.rollingUpdate.maxUnavailable` | string | `10%` | Maximum unavailable pods during rolling update. |
 
-## SELinux Escalation Path
+## SELinux and the CRI socket
 
-If pods log `permission denied` while dialing the CRI socket, SELinux is blocking container_t access to crio.sock. Escalate one rung at a time:
+Reaching `crio.sock` is an SELinux problem, not a file-permission one. The socket is root-owned `0660`, so UID 0 already satisfies the file permissions, but CRI-O's socket is labelled such that a pod's default `container_t` type is denied `connectto`. That MAC denial surfaces as `permission denied` even for root.
 
-1. **Rung 1 (default):** `hostmount-anyuid` with no `seLinuxOptions`
-2. **Rung 2:** Add `podSecurityContext.seLinuxOptions.type: spc_t`
-3. **Rung 3:** Change `scc.name` to `privileged`
+Escaping `container_t` means requesting `seLinuxOptions.type: spc_t`, which an SCC permits only when its `seLinuxContext` strategy is `RunAsAny`. Among the builtin SCCs only `privileged` qualifies, so that is what this chart binds, with `spc_t` set by default.
 
-Apply escalation via:
+`hostmount-anyuid` cannot work here despite granting hostPath mounts and UID 0: it inherits `restricted`'s `seLinuxContext: MustRunAs`, which validates against the allocated options and rejects a pod requesting `spc_t`.
+
+Binding `privileged` is a permission ceiling, not an instruction. The pod still runs unprivileged, drops every capability, uses a read-only root filesystem and forbids privilege escalation.
+
+Verify what was applied:
 
 ```bash
-# Rung 2: SELinux context permissive
-helm upgrade crio-image-exporter ./charts/crio-image-exporter \
-  --set 'podSecurityContext.seLinuxOptions.type=spc_t'
-
-# Rung 3: Privileged SCC
-helm upgrade crio-image-exporter ./charts/crio-image-exporter \
-  --set scc.name=privileged
+oc get pod -n <ns> -l app.kubernetes.io/name=crio-image-exporter \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.openshift\.io/scc}{"\n"}{end}'
 ```
+
+Under Pod Security Admission the namespace must also permit a custom SELinux type:
+
+```bash
+oc label ns <ns> pod-security.kubernetes.io/enforce=privileged --overwrite
+```
+
+To avoid binding `privileged`, create a custom SCC that pins `seLinuxOptions.type: spc_t` under `MustRunAs`, set `scc.create=false`, and bind it yourself.
+
+## Prometheus authentication
+
+When kube-rbac-proxy is enabled, Prometheus must present a bearer token to scrape
+the exporter. The chart creates a `kubernetes.io/service-account-token` Secret
+named `<fullname>-token` for the exporter's ServiceAccount and points the
+ServiceMonitor at it with `bearerTokenSecret`.
+
+It does **not** use `bearerTokenFile`. OpenShift's Prometheus rejects any
+ServiceMonitor that reads a token off the scraper's filesystem, so such a
+ServiceMonitor is silently skipped and no metrics are collected
+([operator-sdk#7003](https://github.com/operator-framework/operator-sdk/issues/7003)).
+
+The Secret is declared without a `data` block on purpose: the token controller
+populates the `token` key. Since Kubernetes 1.24 ServiceAccounts no longer get a
+token Secret automatically, which is why the chart asks for one explicitly. It is
+created only when both `serviceMonitor.enabled` and `kubeRBACProxy.enabled` are
+true.
 
 ## Storage Inspection
 
@@ -155,4 +178,4 @@ Each pod in the DaemonSet:
 - Optionally runs a kube-rbac-proxy sidecar (OpenShift default) to handle TLS and authorization.
 - Mounts `crio.sock` via read-only hostPath.
 - Optionally mounts the container storage root for exact attribution.
-- Is authorized to use the `hostmount-anyuid` SCC via RBAC.
+- Is authorized to use the `privileged` SCC via RBAC, solely to request the `spc_t` SELinux type.
