@@ -59,7 +59,7 @@ func TestHealthzAlwaysOK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -74,7 +74,7 @@ func TestReadyzReflectsReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503 before ready", resp.StatusCode)
 	}
@@ -84,7 +84,7 @@ func TestReadyzReflectsReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 once ready", resp.StatusCode)
 	}
