@@ -39,6 +39,7 @@ spec:
             {{- else }}
             - --listen-address={{ include "crio-image-exporter.listenAddress" . }}
             {{- end }}
+            - --metrics-path={{ .Values.exporter.metricsPath }}
             - --cri-socket={{ .Values.exporter.criSocket }}
             - --cri-timeout={{ .Values.exporter.criTimeout }}
             - --log-level={{ .Values.exporter.logLevel }}

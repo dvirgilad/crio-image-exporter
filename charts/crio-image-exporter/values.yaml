@@ -24,6 +24,9 @@ exporter:
   # kept, since a cap that drops the big ones defeats the purpose.
   maxImages: 0
   disablePerImage: false
+  # Path the exporter serves metrics on. Also the path kube-rbac-proxy
+  # authorizes, so the two cannot drift.
+  metricsPath: /metrics
 
 # Exact per-image attribution: how many bytes you reclaim by deleting an image.
 # Requires mounting the container storage root read-only. Reads
@@ -93,6 +96,24 @@ kubeRBACProxy:
   resources:
     requests: {cpu: 10m, memory: 20Mi}
     limits: {memory: 60Mi}
+
+# Authorization for whoever scrapes this exporter. kube-rbac-proxy asks the API
+# server whether the caller may GET the metrics path; without a grant the
+# scraper authenticates fine and is then refused, which surfaces as a target
+# stuck "down (403)" rather than as an auth error.
+#
+# Both OpenShift monitoring stacks are listed because which one scrapes depends
+# on the namespace: cluster monitoring covers openshift-* namespaces, user
+# workload monitoring covers the rest. Binding the stack that is not in play
+# grants nothing, so listing both is cheaper than guessing. On a plain
+# Kubernetes cluster, replace these with your own Prometheus ServiceAccount.
+metricsReader:
+  create: true
+  scrapers:
+    - name: prometheus-user-workload
+      namespace: openshift-user-workload-monitoring
+    - name: prometheus-k8s
+      namespace: openshift-monitoring
 
 serviceMonitor:
   enabled: true

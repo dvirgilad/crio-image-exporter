@@ -57,3 +57,40 @@ subjects:
     name: {{ include "crio-image-exporter.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+
+{{- if and .Values.kubeRBACProxy.enabled .Values.metricsReader.create }}
+---
+# Authorizes the scrapers to read metrics.
+#
+# kube-rbac-proxy runs without a config file, so it authorizes each request by
+# issuing a SubjectAccessReview for the non-resource URL being requested. A
+# scraper that authenticates successfully but holds no such grant gets 403, not
+# 401 -- which is what a target stuck "down (403)" in Prometheus means.
+#
+# nonResourceURLs cannot appear in a namespaced Role, so this must be a
+# ClusterRole and a ClusterRoleBinding even though it grants exactly one path.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "crio-image-exporter.fullname" . }}-metrics-reader
+  labels: {{- include "crio-image-exporter.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs: [{{ .Values.exporter.metricsPath | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "crio-image-exporter.fullname" . }}-metrics-reader
+  labels: {{- include "crio-image-exporter.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "crio-image-exporter.fullname" . }}-metrics-reader
+subjects:
+  {{- range .Values.metricsReader.scrapers }}
+  - kind: ServiceAccount
+    name: {{ .name }}
+    namespace: {{ .namespace }}
+  {{- end }}
+{{- end }}

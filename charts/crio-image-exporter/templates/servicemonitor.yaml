@@ -16,6 +16,7 @@ spec:
     {{- if .Values.kubeRBACProxy.enabled }}
     - port: https
       scheme: https
+      path: {{ .Values.exporter.metricsPath }}
       interval: {{ .Values.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
       # Not bearerTokenFile: OpenShift's Prometheus rejects a ServiceMonitor
@@ -35,6 +36,7 @@ spec:
     {{- else }}
     - port: metrics
       scheme: http
+      path: {{ .Values.exporter.metricsPath }}
       interval: {{ .Values.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
     {{- end }}

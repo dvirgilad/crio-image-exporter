@@ -49,6 +49,7 @@ helm install crio-image-exporter ./charts/crio-image-exporter \
 | `exporter.imageNameFilter` | string | `""` | Regex allowlist for image names (repo:tag); empty means all images. |
 | `exporter.maxImages` | int | `0` | Maximum per-image series to report; 0 means unlimited. Largest images are retained when capped. |
 | `exporter.disablePerImage` | bool | `false` | Disable per-image metrics; only report aggregate metrics. |
+| `exporter.metricsPath` | string | `/metrics` | Path the exporter serves metrics on. Also the path kube-rbac-proxy authorizes and the ServiceMonitor scrapes. |
 | `storageInspection.enabled` | bool | `false` | Enable exact per-image attribution by reading container storage metadata. |
 | `storageInspection.root` | string | `/var/lib/containers/storage` | Container storage root path. |
 | `storageInspection.refreshInterval` | string | `5m` | Interval to refresh storage metadata. |
@@ -66,6 +67,8 @@ helm install crio-image-exporter ./charts/crio-image-exporter \
 | `kubeRBACProxy.image` | string | `quay.io/brancz/kube-rbac-proxy:v0.18.1` | kube-rbac-proxy container image. |
 | `kubeRBACProxy.resources.requests` | object | `{cpu: 10m, memory: 20Mi}` | kube-rbac-proxy resource requests. |
 | `kubeRBACProxy.resources.limits` | object | `{memory: 60Mi}` | kube-rbac-proxy resource limits. |
+| `metricsReader.create` | bool | `true` | Create the ClusterRole and ClusterRoleBinding authorizing scrapers to GET the metrics path. |
+| `metricsReader.scrapers` | list | both OpenShift monitoring ServiceAccounts | ServiceAccounts allowed to scrape. Replace on non-OpenShift clusters. |
 | `serviceMonitor.enabled` | bool | `true` | Create a ServiceMonitor for Prometheus Operator. |
 | `serviceMonitor.interval` | string | `60s` | Prometheus scrape interval. |
 | `serviceMonitor.scrapeTimeout` | string | `30s` | Prometheus scrape timeout. |
@@ -131,6 +134,32 @@ The Secret is explicit because Kubernetes 1.24 and later no longer mint a token
 Secret for a ServiceAccount automatically. Both objects render only when
 `serviceMonitor.enabled` and `kubeRBACProxy.enabled` are both true.
 
+### Scraper authorization
+
+kube-rbac-proxy runs without a config file, so it authorizes every request by
+asking the API server, via SubjectAccessReview, whether the caller may `get` the
+non-resource URL being requested. A scraper that authenticates successfully but
+holds no such grant is refused with **403**, which shows up in Prometheus as a
+target stuck `down (403)` rather than as an authentication error.
+
+The chart therefore creates a ClusterRole granting `get` on
+`exporter.metricsPath` and binds it to the ServiceAccounts in
+`metricsReader.scrapers`. It has to be cluster-scoped: `nonResourceURLs` are not
+permitted in a namespaced Role.
+
+Both OpenShift monitoring ServiceAccounts are bound by default, because which
+one scrapes depends on the namespace -- cluster monitoring covers `openshift-*`,
+user workload monitoring covers everything else. Binding the stack that is not
+in play grants nothing. On a plain Kubernetes cluster, point
+`metricsReader.scrapers` at your own Prometheus ServiceAccount.
+
+Check a grant directly:
+
+```bash
+oc auth can-i get /metrics \
+  --as=system:serviceaccount:openshift-user-workload-monitoring:prometheus-user-workload
+```
+
 ## Storage Inspection
 
 By default, the exporter reports *apparent* image sizes, which double-count layers shared between images. To enable exact per-image attribution (the bytes you reclaim by deleting an image), enable storage inspection:
@@ -173,6 +202,13 @@ Common issues:
 - **`flag provided but not defined`**: Chart rendered with incorrect flag names. Verify against exporter's help.
 - **`permission denied` dialing socket**: SELinux blocking; escalate as described above.
 - **`connection refused`**: CRI-O socket path incorrect; verify `--set exporter.criSocket=...`
+
+### Target down with 403
+
+kube-rbac-proxy authenticated the scraper and then refused it. The scraper's
+ServiceAccount is missing the metrics-reader grant -- see Scraper authorization
+above, and confirm with `oc auth can-i`. A 401 instead means the token never
+arrived, which is a `bearerTokenSecret` problem, not an RBAC one.
 
 ### Metrics Not Appearing
 
