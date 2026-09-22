@@ -1,0 +1,21 @@
+{{- if and .Values.serviceMonitor.enabled .Values.kubeRBACProxy.enabled }}
+# CA bundle Prometheus uses to verify kube-rbac-proxy's serving certificate.
+#
+# The ServiceMonitor cannot use tlsConfig.caFile for the same reason it cannot
+# use bearerTokenFile: OpenShift's Prometheus rejects a ServiceMonitor that
+# reaches into the scraper's filesystem, so the bundle has to be referenced as
+# a ConfigMap in this namespace instead.
+#
+# No data block appears here on purpose: the service CA operator sees the
+# annotation and injects the cluster's service CA under the service-ca.crt
+# key -- the same CA that signs the serving certificate requested on the
+# Service, so the two always agree.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crio-image-exporter.fullname" . }}-ca
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "crio-image-exporter.labels" . | nindent 4 }}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+{{- end }}
