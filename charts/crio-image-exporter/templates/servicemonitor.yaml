@@ -24,8 +24,13 @@ spec:
         name: {{ include "crio-image-exporter.fullname" . }}-token
         key: token
       tlsConfig:
-        # The service CA bundle, injected by OpenShift into monitoring pods.
-        caFile: /etc/prometheus/configmaps/serving-certs-ca-bundle/service-ca.crt
+        # Not caFile: a ServiceMonitor that reads the scraper's filesystem is
+        # rejected. The ConfigMap is created by this chart and populated by
+        # the service CA operator.
+        ca:
+          configMap:
+            name: {{ include "crio-image-exporter.fullname" . }}-ca
+            key: service-ca.crt
         serverName: {{ include "crio-image-exporter.fullname" . }}.{{ .Release.Namespace }}.svc
     {{- else }}
     - port: metrics
