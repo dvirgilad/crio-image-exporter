@@ -29,10 +29,11 @@ permit a custom SELinux type:
   oc label ns {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=privileged --overwrite
 
 If Prometheus shows the target down with 403, kube-rbac-proxy authenticated the
-scraper and then refused it -- the scraper's ServiceAccount lacks the grant on
-{{ .Values.exporter.metricsPath }}. Check with:
+caller and then refused it. The identity presented on each scrape is this
+chart's own ServiceAccount, not the monitoring stack's, because the token comes
+from the Secret issued for it. Check that one:
 
-  oc auth can-i get {{ .Values.exporter.metricsPath }} --as=system:serviceaccount:openshift-user-workload-monitoring:prometheus-user-workload
+  oc auth can-i get {{ .Values.exporter.metricsPath }} --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "crio-image-exporter.serviceAccountName" . }}
 
 Query example -- largest reclaimable images on each node:
 

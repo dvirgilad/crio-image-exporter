@@ -88,6 +88,13 @@ roleRef:
   kind: ClusterRole
   name: {{ include "crio-image-exporter.fullname" . }}-metrics-reader
 subjects:
+  # The exporter's own ServiceAccount, because the token the ServiceMonitor
+  # presents is issued for it -- see the Secret in sa-token-secret.yaml. That
+  # is the identity kube-rbac-proxy authenticates and then authorizes, so
+  # granting the monitoring stack's ServiceAccount instead has no effect.
+  - kind: ServiceAccount
+    name: {{ include "crio-image-exporter.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
   {{- range .Values.metricsReader.scrapers }}
   - kind: ServiceAccount
     name: {{ .name }}

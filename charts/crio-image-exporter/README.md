@@ -68,7 +68,7 @@ helm install crio-image-exporter ./charts/crio-image-exporter \
 | `kubeRBACProxy.resources.requests` | object | `{cpu: 10m, memory: 20Mi}` | kube-rbac-proxy resource requests. |
 | `kubeRBACProxy.resources.limits` | object | `{memory: 60Mi}` | kube-rbac-proxy resource limits. |
 | `metricsReader.create` | bool | `true` | Create the ClusterRole and ClusterRoleBinding authorizing scrapers to GET the metrics path. |
-| `metricsReader.scrapers` | list | both OpenShift monitoring ServiceAccounts | ServiceAccounts allowed to scrape. Replace on non-OpenShift clusters. |
+| `metricsReader.scrapers` | list | `[]` | Additional ServiceAccounts allowed to scrape. The exporter's own is always bound; see below. |
 | `serviceMonitor.enabled` | bool | `true` | Create a ServiceMonitor for Prometheus Operator. |
 | `serviceMonitor.interval` | string | `60s` | Prometheus scrape interval. |
 | `serviceMonitor.scrapeTimeout` | string | `30s` | Prometheus scrape timeout. |
@@ -133,25 +133,30 @@ non-resource URL being requested. A scraper that authenticates successfully but
 holds no such grant is refused with **403**, which shows up in Prometheus as a
 target stuck `down (403)` rather than as an authentication error.
 
-The chart therefore creates a ClusterRole granting `get` on
-`exporter.metricsPath` and binds it to the ServiceAccounts in
-`metricsReader.scrapers`. It has to be cluster-scoped: `nonResourceURLs` are not
-permitted in a namespaced Role.
+The identity being authorized is the **exporter's own ServiceAccount**, not the
+monitoring stack's. The token this chart hands Prometheus through
+`bearerTokenSecret` is issued for the exporter's ServiceAccount, so that is who
+kube-rbac-proxy sees on every scrape. Granting `/metrics` to
+`prometheus-user-workload` or `prometheus-k8s` therefore changes nothing on its
+own -- that identity never appears in the request.
 
-Both OpenShift monitoring ServiceAccounts are bound by default, because which
-one scrapes depends on the namespace -- cluster monitoring covers `openshift-*`,
-user workload monitoring covers everything else. Binding the stack that is not
-in play grants nothing. On a plain Kubernetes cluster, point
-`metricsReader.scrapers` at your own Prometheus ServiceAccount.
+So the chart creates a ClusterRole granting `get` on `exporter.metricsPath` and
+binds the exporter's ServiceAccount to it. It has to be cluster-scoped:
+`nonResourceURLs` are not permitted in a namespaced Role. Nothing further is
+needed for the chart's own ServiceMonitor.
 
-Check a grant directly:
+`metricsReader.scrapers` adds further identities, for a second Prometheus
+scraping with its own token or a hand-written ServiceMonitor using
+`bearerTokenFile`. Each entry is a `{name, namespace}` naming a ServiceAccount.
+
+Check the grant against the identity that is actually presented:
 
 ```bash
 oc auth can-i get /metrics \
-  --as=system:serviceaccount:openshift-user-workload-monitoring:prometheus-user-workload
+  --as=system:serviceaccount:<namespace>:<release>-crio-image-exporter
 ```
 
-## Storage Inspection
+## Storage Inspection## Storage Inspection
 
 By default, the exporter reports *apparent* image sizes, which double-count layers shared between images. To enable exact per-image attribution (the bytes you reclaim by deleting an image), enable storage inspection:
 
@@ -196,10 +201,11 @@ Common issues:
 
 ### Target down with 403
 
-kube-rbac-proxy authenticated the scraper and then refused it. The scraper's
-ServiceAccount is missing the metrics-reader grant -- see Scraper authorization
-above, and confirm with `oc auth can-i`. A 401 instead means the token never
-arrived, which is a `bearerTokenSecret` problem, not an RBAC one.
+kube-rbac-proxy authenticated the caller and then refused it. Check the grant
+against the **exporter's** ServiceAccount, not the monitoring stack's -- the
+token presented on each scrape is issued for the exporter (see Scraper
+authorization above). A 401 instead means the token never arrived, which is a
+`bearerTokenSecret` problem, not an RBAC one.
 
 ### Metrics Not Appearing
 

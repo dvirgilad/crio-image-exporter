@@ -102,18 +102,18 @@ kubeRBACProxy:
 # scraper authenticates fine and is then refused, which surfaces as a target
 # stuck "down (403)" rather than as an auth error.
 #
-# Both OpenShift monitoring stacks are listed because which one scrapes depends
-# on the namespace: cluster monitoring covers openshift-* namespaces, user
-# workload monitoring covers the rest. Binding the stack that is not in play
-# grants nothing, so listing both is cheaper than guessing. On a plain
-# Kubernetes cluster, replace these with your own Prometheus ServiceAccount.
+# The exporter's own ServiceAccount is always a subject of that grant, because
+# the token this chart hands Prometheus via bearerTokenSecret is issued for the
+# exporter's ServiceAccount -- so that, not the monitoring stack's identity, is
+# who kube-rbac-proxy sees. Nothing needs listing here for the chart's own
+# ServiceMonitor to work.
+#
+# scrapers is for additional identities: another Prometheus scraping with its
+# own token, or a hand-written ServiceMonitor using bearerTokenFile. Entries
+# take {name, namespace} naming a ServiceAccount.
 metricsReader:
   create: true
-  scrapers:
-    - name: prometheus-user-workload
-      namespace: openshift-user-workload-monitoring
-    - name: prometheus-k8s
-      namespace: openshift-monitoring
+  scrapers: []
 
 serviceMonitor:
   enabled: true
