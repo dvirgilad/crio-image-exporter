@@ -11,7 +11,7 @@ This chart provides:
 - **Optional kube-rbac-proxy sidecar** for TLS termination and API server-based authorization on OpenShift
 - **Optional storage inspection** for exact per-image attribution (vs. apparent sizes)
 - **SELinux handling** for the CRI socket, which `container_t` cannot reach (see below)
-- **ServiceMonitor** integration for Prometheus Operator, authenticating with a `bearerTokenSecret`
+- **ServiceMonitor** integration for Prometheus Operator, passing the bearer token and CA bundle by object reference
 
 ## Installation
 
@@ -104,23 +104,32 @@ oc label ns <ns> pod-security.kubernetes.io/enforce=privileged --overwrite
 
 To avoid binding `privileged`, create a custom SCC that pins `seLinuxOptions.type: spc_t` under `MustRunAs`, set `scc.create=false`, and bind it yourself.
 
-## Prometheus authentication
+## Prometheus authentication and TLS
 
-When kube-rbac-proxy is enabled, Prometheus must present a bearer token to scrape
-the exporter. The chart creates a `kubernetes.io/service-account-token` Secret
-named `<fullname>-token` for the exporter's ServiceAccount and points the
-ServiceMonitor at it with `bearerTokenSecret`.
-
-It does **not** use `bearerTokenFile`. OpenShift's Prometheus rejects any
-ServiceMonitor that reads a token off the scraper's filesystem, so such a
-ServiceMonitor is silently skipped and no metrics are collected
+When kube-rbac-proxy is enabled, Prometheus must present a bearer token to
+scrape the exporter and must verify the proxy's serving certificate. OpenShift's
+Prometheus rejects any ServiceMonitor that reaches into the scraper's own
+filesystem, so neither `bearerTokenFile` nor `tlsConfig.caFile` can be used
 ([operator-sdk#7003](https://github.com/operator-framework/operator-sdk/issues/7003)).
+A rejected ServiceMonitor is skipped silently: no error on the resource, no
+metrics collected.
 
-The Secret is declared without a `data` block on purpose: the token controller
-populates the `token` key. Since Kubernetes 1.24 ServiceAccounts no longer get a
-token Secret automatically, which is why the chart asks for one explicitly. It is
-created only when both `serviceMonitor.enabled` and `kubeRBACProxy.enabled` are
-true.
+The chart therefore passes both by reference to objects in the release
+namespace, which is what the ServiceMonitor spec permits:
+
+| Reference | Object | Populated by |
+|-----------|--------|--------------|
+| `bearerTokenSecret` | Secret `<fullname>-token`, type `kubernetes.io/service-account-token` | the token controller, which fills in the `token` key |
+| `tlsConfig.ca.configMap` | ConfigMap `<fullname>-ca`, annotated `service.beta.openshift.io/inject-cabundle` | the service CA operator, which fills in `service-ca.crt` |
+
+Both are declared without a data block, since their contents are injected. The
+injected CA is the same one that signs the serving certificate requested via the
+Service's `service.beta.openshift.io/serving-cert-secret-name` annotation, so the
+two cannot drift apart.
+
+The Secret is explicit because Kubernetes 1.24 and later no longer mint a token
+Secret for a ServiceAccount automatically. Both objects render only when
+`serviceMonitor.enabled` and `kubeRBACProxy.enabled` are both true.
 
 ## Storage Inspection
 
