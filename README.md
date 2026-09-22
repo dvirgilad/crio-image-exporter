@@ -163,39 +163,57 @@ helm upgrade crio-image-exporter ./charts/crio-image-exporter \
 
 ## 7. OpenShift and SELinux
 
-The chart binds the DaemonSet's ServiceAccount to the builtin
-`hostmount-anyuid` SCC (it creates no SCC object of its own). That grants
-hostPath volumes and an arbitrary UID, but it does **not** relax SELinux —
-and on OpenShift a pod's default `container_t` process type is typically
-denied a connection to `crio.sock`.
-
-If pods log something like:
+Reaching `crio.sock` is an **SELinux** problem, not a file-permission one.
+The socket is root-owned mode `0660`, so running as UID 0 already satisfies
+the file permissions — but CRI-O's socket is labelled such that a pod's
+default `container_t` type is denied a `connectto`. That is a MAC denial, and
+it surfaces as `permission denied` even for root:
 
 ```
 connect to CRI: permission denied
 ```
 
-(a `permission denied` while dialing the socket), SELinux is the cause.
-Escalate one rung at a time:
+Escaping `container_t` means requesting `seLinuxOptions.type: spc_t`, and an
+SCC only permits that if its `seLinuxContext` strategy is `RunAsAny`. This is
+why the chart binds the builtin **`privileged`** SCC and sets `spc_t` by
+default — among the builtin SCCs, only `privileged` has `RunAsAny`.
 
-1. **`hostmount-anyuid`, no `seLinuxOptions`** (the chart default). Grants
-   hostPath mounts and UID 0, nothing about SELinux type.
-2. **Relax the SELinux type on the pod:**
-   ```bash
-   helm upgrade crio-image-exporter ./charts/crio-image-exporter \
-     --set 'podSecurityContext.seLinuxOptions.type=spc_t'
-   ```
-   `spc_t` ("super privileged container") is unconfined with respect to
-   SELinux while every other constraint (capabilities, UID, read-only
-   rootfs) stays in place.
-3. **Move to the `privileged` SCC** if rung 2 is not enough:
-   ```bash
-   helm upgrade crio-image-exporter ./charts/crio-image-exporter \
-     --set scc.name=privileged
-   ```
+`hostmount-anyuid` does **not** work here, despite granting hostPath mounts
+and UID 0. It inherits `restricted`'s `seLinuxContext: MustRunAs`, which
+*validates against* the allocated options and rejects a pod asking for `spc_t`
+outright. Granting it produces one of two failures: the pod is admitted but
+gets `permission denied` on every scrape, or — if you also set `spc_t` — it is
+refused at admission.
 
-Try each rung only after confirming the symptom above; do not start at
-`privileged` by default.
+**Binding `privileged` is a permission ceiling, not an instruction.** The pod
+still runs unprivileged: `allowPrivilegeEscalation: false`, every capability
+dropped, a read-only root filesystem, and `seccompProfile: RuntimeDefault`. It
+gains exactly one thing — the ability to ask for the SELinux type it needs.
+Verify what was actually applied:
+
+```bash
+oc get pod -n <ns> -l app.kubernetes.io/name=crio-image-exporter \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.openshift\.io/scc}{"\n"}{end}'
+```
+
+If your cluster enforces Pod Security Admission, the namespace must also
+permit a custom SELinux type, or admission rejects the pod before SCC
+selection matters:
+
+```bash
+oc label ns <ns> pod-security.kubernetes.io/enforce=privileged --overwrite
+```
+
+### Tightening this
+
+If binding `privileged` is unacceptable in your environment, the narrower
+option is a custom SCC that pins the type rather than allowing any:
+`seLinuxContext: MustRunAs` with `seLinuxOptions.type: spc_t`,
+`allowHostDirVolumePlugin: true`, `runAsUser: RunAsAny`, and only the volume
+types this chart uses. That is strictly tighter than `privileged`; the
+trade-off is that something must create and own a cluster-scoped SCC object,
+which this chart deliberately does not do. Set `scc.create=false`, create the
+SCC yourself, and bind it to the ServiceAccount.
 
 ## 8. Cardinality
 

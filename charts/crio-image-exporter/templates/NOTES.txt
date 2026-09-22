@@ -12,10 +12,21 @@ reclaim by deleting an image, enable:
 
 {{ end -}}
 If pods log "permission denied" dialing the CRI socket, SELinux is blocking the
-connection. Escalate one rung at a time:
+connection -- not file permissions. Confirm with:
 
-  1. --set podSecurityContext.seLinuxOptions.type=spc_t
-  2. --set scc.name=privileged
+  oc get pod -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "crio-image-exporter.name" . }} \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.openshift\.io/scc}{"\n"}{end}'
+
+That annotation must show the SCC this chart binds ({{ .Values.scc.name }}), and the
+pod must be running with seLinuxOptions.type=spc_t. If the annotation names a
+different SCC, the ServiceAccount is not getting the binding -- check:
+
+  oc get rolebinding -n {{ .Release.Namespace }} {{ include "crio-image-exporter.fullname" . }}-scc
+
+If your cluster enforces Pod Security Admission, the namespace also needs to
+permit a custom SELinux type:
+
+  oc label ns {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=privileged --overwrite
 
 Query example -- largest reclaimable images on each node:
 
