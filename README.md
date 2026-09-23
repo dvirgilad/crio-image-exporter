@@ -67,7 +67,11 @@ age collection.
 | `crio_image_exclusive_size_bytes` | gauge | Bytes reclaimed by deleting this image. Requires storage inspection. |
 | `crio_image_exporter_scrape_success` | gauge | `1` if the last scrape's CRI calls all succeeded. |
 
-Per-image metrics carry only an `image_id` label. Names live in
+Every metric carries a `node` label naming the node it describes, filled from
+the downward API. Prefer it to `instance` for grouping: `instance` is the pod's
+`IP:port` and changes on every reschedule, while `node` does not.
+
+Per-image metrics carry only an `image_id` label beyond that. Names live in
 `crio_image_info`, so join before you look at anything by name. Note the
 operand order: `crio_image_info` emits one series per repo tag, so it is the
 "many" side and must be on the right of `group_right` — writing
@@ -108,6 +112,7 @@ flag > environment > default.
 | `--max-images` | `CRIO_IMAGE_EXPORTER_MAX_IMAGES` | `0` | Cap on per-image series; `0` is unlimited. |
 | `--disable-per-image` | `CRIO_IMAGE_EXPORTER_DISABLE_PER_IMAGE` | `false` | Emit aggregates and health metrics only. |
 | `--log-level` | `CRIO_IMAGE_EXPORTER_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
+| `--node-name` | `CRIO_IMAGE_EXPORTER_NODE_NAME` | `""` | Node this exporter reports about; labels every metric. The chart sets the env var from the downward API. Empty omits the label. |
 | `--healthcheck` | `CRIO_IMAGE_EXPORTER_HEALTHCHECK` | `false` | Probe a running instance over loopback and exit `0`/`1` instead of serving. Used by the chart's exec probes. |
 | `--healthcheck-path` | `CRIO_IMAGE_EXPORTER_HEALTHCHECK_PATH` | `/readyz` | Endpoint `--healthcheck` probes. Liveness uses `/healthz`, readiness `/readyz`. |
 

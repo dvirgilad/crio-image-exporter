@@ -56,6 +56,15 @@ spec:
             - --storage-root={{ .Values.storageInspection.root }}
             - --storage-refresh-interval={{ .Values.storageInspection.refreshInterval }}
             {{- end }}
+          env:
+            # The node name labels every metric. Passed as an environment
+            # variable rather than an argument because the downward API can
+            # only populate one, and the exporter reads
+            # CRIO_IMAGE_EXPORTER_-prefixed variables for every flag.
+            - name: CRIO_IMAGE_EXPORTER_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           ports:
             {{- if not .Values.kubeRBACProxy.enabled }}
             - name: metrics

@@ -75,3 +75,37 @@ func TestParseRejectsNegativeMaxImages(t *testing.T) {
 		t.Fatal("expected error for negative max-images")
 	}
 }
+
+func TestNodeNameFromFlagAndEnv(t *testing.T) {
+	cfg, err := Parse([]string{"--node-name=worker-3"}, noEnv)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.NodeName != "worker-3" {
+		t.Errorf("NodeName = %q, want worker-3", cfg.NodeName)
+	}
+
+	// The DaemonSet supplies it through the downward API as an env var, which
+	// is why no --node-name argument appears in the chart's container args.
+	env := func(k string) (string, bool) {
+		if k == "CRIO_IMAGE_EXPORTER_NODE_NAME" {
+			return "worker-9", true
+		}
+		return "", false
+	}
+	cfg, err = Parse(nil, env)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.NodeName != "worker-9" {
+		t.Errorf("NodeName = %q, want worker-9", cfg.NodeName)
+	}
+
+	cfg, err = Parse(nil, noEnv)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.NodeName != "" {
+		t.Errorf("NodeName = %q, want empty", cfg.NodeName)
+	}
+}

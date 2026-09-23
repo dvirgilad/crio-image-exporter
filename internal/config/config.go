@@ -30,6 +30,11 @@ type Config struct {
 
 	LogLevel string
 
+	// NodeName labels every metric with the node the exporter is reporting
+	// about. The DaemonSet supplies it through the downward API. Empty outside
+	// Kubernetes, in which case no node label is emitted at all.
+	NodeName string
+
 	// Healthcheck makes the binary probe an already-running instance over
 	// loopback and exit 0/1 instead of serving. Kubelet runs HTTP probes from
 	// the node's network namespace, so it cannot reach a loopback-bound
@@ -65,6 +70,7 @@ func Parse(args []string, lookupEnv func(string) (string, bool)) (*Config, error
 	fs.IntVar(&cfg.MaxImages, "max-images", 0, "cap on per-image series; 0 is unlimited")
 	fs.BoolVar(&cfg.DisablePerImage, "disable-per-image", false, "emit aggregates and health metrics only")
 	fs.StringVar(&cfg.LogLevel, "log-level", "info", "log level: debug, info, warn, error")
+	fs.StringVar(&cfg.NodeName, "node-name", "", "node this exporter reports about; labels every metric. Normally set via CRIO_IMAGE_EXPORTER_NODE_NAME from the downward API")
 	fs.BoolVar(&cfg.Healthcheck, "healthcheck", false, "probe a running instance over loopback and exit 0 (healthy) or 1; for container exec probes")
 	fs.StringVar(&cfg.HealthcheckPath, "healthcheck-path", "/readyz", "endpoint --healthcheck probes: /healthz for liveness, /readyz for readiness")
 

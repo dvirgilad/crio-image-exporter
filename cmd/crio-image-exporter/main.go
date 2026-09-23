@@ -103,7 +103,7 @@ func run() error {
 	}
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(
+	registererFor(registry, cfg.NodeName).MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		coll,
@@ -180,6 +180,20 @@ func readyAt(url string) bool {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode == http.StatusOK
+}
+
+// registererFor labels everything registered through it with the node the
+// exporter runs on. It covers the Go and process collectors too: those describe
+// this node's exporter, and a runtime metric you cannot attribute to a node is
+// not worth much on a DaemonSet.
+//
+// An empty nodeName registers unwrapped rather than emitting node="", which
+// would read as a node whose name is genuinely blank.
+func registererFor(registry *prometheus.Registry, nodeName string) prometheus.Registerer {
+	if nodeName == "" {
+		return registry
+	}
+	return prometheus.WrapRegistererWith(prometheus.Labels{"node": nodeName}, registry)
 }
 
 func newMux(metricsPath string, registry *prometheus.Registry, r readiness) *http.ServeMux {
