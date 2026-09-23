@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type stubReady struct{ ready bool }
@@ -87,5 +89,45 @@ func TestReadyzReflectsReadiness(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 once ready", resp.StatusCode)
+	}
+}
+
+// The DaemonSet gets the node name through the downward API. Every metric the
+// exporter publishes has to carry it, since a node is what the whole exporter
+// is reporting about -- relying on `instance` instead ties queries to a pod IP
+// that changes on every reschedule.
+func TestNodeLabelAppliesToEveryMetric(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	registererFor(reg, "worker-3").MustRegister(
+		prometheus.NewGauge(prometheus.GaugeOpts{Name: "some_metric", Help: "h"}),
+	)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	if len(mfs) != 1 {
+		t.Fatalf("metric families = %d, want 1", len(mfs))
+	}
+	labels := mfs[0].GetMetric()[0].GetLabel()
+	if len(labels) != 1 || labels[0].GetName() != "node" || labels[0].GetValue() != "worker-3" {
+		t.Errorf("labels = %v, want node=worker-3", labels)
+	}
+}
+
+// Absent is better than wrong: outside Kubernetes there is no node name, and
+// an empty node="" label would read as a real node whose name is blank.
+func TestNoNodeLabelWhenNodeNameUnset(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	registererFor(reg, "").MustRegister(
+		prometheus.NewGauge(prometheus.GaugeOpts{Name: "some_metric", Help: "h"}),
+	)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	if got := mfs[0].GetMetric()[0].GetLabel(); len(got) != 0 {
+		t.Errorf("labels = %v, want none", got)
 	}
 }

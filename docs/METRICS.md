@@ -13,6 +13,23 @@ more.
 - `crio_image_deduplication_ratio` tells you how inflated apparent sizes are on
   a given node.
 
+## The node label
+
+Every metric this exporter publishes carries a `node` label naming the node it
+describes, including the Go runtime and process metrics. The DaemonSet fills it
+in from the downward API (`spec.nodeName`) via
+`CRIO_IMAGE_EXPORTER_NODE_NAME`.
+
+Prefer it to `instance` when grouping or joining. `instance` is the pod's
+`IP:port`, so it changes every time the pod is rescheduled and breaks the
+continuity of a series across a rollout; `node` does not. Both work in the
+joins below -- the examples use `instance` because it is present whether or not
+the exporter knows its node name.
+
+Outside Kubernetes, with no `--node-name` given, the label is omitted entirely
+rather than emitted empty: `node=""` would read as a node whose name is
+genuinely blank.
+
 ## Joining names onto per-image metrics
 
 Per-image metrics are labeled with `image_id` only. Names live in

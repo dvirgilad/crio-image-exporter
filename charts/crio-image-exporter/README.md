@@ -165,6 +165,15 @@ oc auth can-i get /metrics \
   --as=system:serviceaccount:<namespace>:<release>-crio-image-exporter
 ```
 
+### The node label
+
+Every metric the exporter publishes carries a `node` label. The DaemonSet fills
+it from the downward API (`spec.nodeName`), so there is nothing to configure.
+
+Prefer it to `instance` in queries: `instance` is the pod's `IP:port` and
+changes whenever the pod is rescheduled, breaking series continuity across a
+rollout. `node` does not.
+
 ## Storage Inspection## Storage Inspection
 
 By default, the exporter reports *apparent* image sizes, which double-count layers shared between images. To enable exact per-image attribution (the bytes you reclaim by deleting an image), enable storage inspection:
@@ -228,5 +237,6 @@ Each pod in the DaemonSet:
 - Runs the exporter container with read-only root filesystem and dropped capabilities (UID 0 only).
 - Optionally runs a kube-rbac-proxy sidecar (OpenShift default) to handle TLS and authorization.
 - Mounts `crio.sock` via read-only hostPath.
+- Receives its node name through the downward API, which labels every metric.
 - Optionally mounts the container storage root for exact attribution.
 - Is authorized to use the `privileged` SCC via RBAC, solely to request the `spc_t` SELinux type.
