@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/prometheus/client_golang v1.24.1
 	google.golang.org/grpc v1.83.2
-	k8s.io/cri-api v0.37.0
+	k8s.io/cri-api v0.37.1
 )
 
 require (
